@@ -1,4 +1,4 @@
-name: ☁️ 云端 Nuitka 极速打包 (v2.0 Pro)
+name: ☁️ 云端 Nuitka 极速打包 (v2.1 Fix)
 
 on:
   workflow_dispatch:
@@ -26,7 +26,6 @@ on:
 jobs:
   build:
     name: 🚀 Build on ${{ matrix.os }}
-    # 使用矩阵策略，方便未来扩展
     strategy:
       matrix:
         os: [windows-latest]
@@ -34,41 +33,44 @@ jobs:
     runs-on: ${{ matrix.os }}
     
     steps:
-      # 1. 拉取代码
       - name: Check-out repository
         uses: actions/checkout@v4
 
-      # 2. 配置 Python 3.12 + 缓存加速
       - name: Setup Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12' # 升级到最新
+          python-version: '3.12'
           cache: 'pip'
-          # 指定依赖文件路径，显著加速后续构建
           cache-dependency-path: 'requirements.txt'
 
-      # 3. 安装依赖 & 智能处理图标 (核心优化)
+      # === 修复点在这里 ===
       - name: Install Dependencies & Prepare Icon
         shell: python
+        # 关键修复 1：设置环境变量强制 UTF-8 输出
+        env:
+          PYTHONIOENCODING: utf-8
         run: |
           import os
           import subprocess
           import sys
+          import codecs
 
-          # --- A. 安装基础工具 ---
+          # 关键修复 2：在代码内部强制重置标准输出编码，防止 crash
+          try:
+              if sys.stdout.encoding != 'utf-8':
+                  sys.stdout.reconfigure(encoding='utf-8')
+          except Exception:
+              pass
+
           print("📦 安装 Nuitka 和构建工具...")
           subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
-          # 安装 Pillow 用于处理图片转换
           subprocess.check_call([sys.executable, "-m", "pip", "install", "wheel", "nuitka", "zstandard", "pillow"])
 
-          # --- B. 强制安装 CPU 版 Torch (减小体积) ---
           print("🔥 安装 CPU 版 Torch...")
           subprocess.check_call([sys.executable, "-m", "pip", "install", "torch", "torchvision", "torchaudio", "--index-url", "https://download.pytorch.org/whl/cpu"])
 
-          # --- C. 安装用户依赖 ---
           if os.path.exists("requirements.txt"):
               print("📚 安装 requirements.txt...")
-              # 简单的过滤 torch 逻辑，避免覆盖安装
               with open("requirements.txt", "r", encoding="utf-8") as f:
                   deps = [line.strip() for line in f if "torch" not in line.lower() and line.strip()]
               
@@ -78,51 +80,41 @@ jobs:
               print("⚠️ 未找到 requirements.txt，安装默认库...")
               subprocess.check_call([sys.executable, "-m", "pip", "install", "pygame", "numpy", "pandas", "opencv-python"])
 
-          # --- D. 智能图标转换 (解决图标是蛇的问题) ---
           print("🎨 处理图标...")
           from PIL import Image
           
-          # 优先级：icon.ico > 480x480.png > 108x108.png > 28x28.png
           icon_target = "icon.ico"
           source_imgs = ["icon.ico", "480x480.png", "108x108.png", "28x28.png", "icon.png", "logo.png"]
           
           found_icon = False
           
-          # 如果 icon.ico 已经存在，直接用
           if os.path.exists(icon_target):
-              print(f"✅ 发现现成的 {icon_target}，将使用此图标。")
+              print(f"✅ 发现现成的 {icon_target}")
               found_icon = True
           else:
-              # 否则寻找 png 并转换
               for img_name in source_imgs:
                   if os.path.exists(img_name):
-                      print(f"🔄 发现 {img_name}，正在转换为高质量 icon.ico...")
+                      print(f"🔄 正在转换 {img_name}...")
                       try:
                           img = Image.open(img_name)
-                          # 转换为包含多种尺寸的 ICO
                           img.save(icon_target, format='ICO', sizes=[(256, 256), (128, 128), (64, 64), (48, 48), (32, 32), (16, 16)])
-                          print(f"✅ 转换成功：{icon_target}")
+                          print(f"✅ 转换成功")
                           found_icon = True
                           break
                       except Exception as e:
                           print(f"❌ 转换失败: {e}")
           
-          # 这是一个标记文件，后续步骤用它来决定是否启用图标参数
           if found_icon:
               with open("HAS_ICON", "w") as f: f.write("yes")
 
-      # 4. 执行 Nuitka 打包
       - name: Build with Nuitka
         uses: Nuitka/Nuitka-Action@main
         with:
           nuitka-version: main
           script-name: ${{ inputs.script_name }}
           mode: ${{ inputs.build_mode }}
-          
-          # 显式开启导入跟踪
           follow-imports: true
           
-          # === 插件配置 (多行写法，清晰) ===
           enable-plugins: |
             numpy
             torch
@@ -131,23 +123,15 @@ jobs:
             pygame
             anti-bloat
           
-          # === 界面控制 (修正参数名) ===
           disable-console: true
-          
-          # === 编译环境 ===
           assume-yes-for-downloads: true
           lto: no
           
-          # === 关键：图标设置 ===
-          # 这里硬编码 icon.ico，因为上一步的脚本保证了如果仓库有图，
-          # 就会生成这个 icon.ico 文件。如果仓库完全没图，Nuitka 会忽略缺失的文件警告或使用默认
           windows-icon-from-ico: icon.ico
           
-          # === 资源文件 ===
           include-data-dir: |
             ${{ inputs.include_assets && 'assets=assets' || '' }}
 
-      # 5. 上传结果
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
