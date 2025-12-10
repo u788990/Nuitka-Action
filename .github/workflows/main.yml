@@ -1,4 +1,4 @@
-name: ☁️ 云端 Nuitka 极速打包 (v2.4 Fix Pygame)
+name: ☁️ 云端 Nuitka 极速打包 (v3.0 终极防御版)
 
 on:
   workflow_dispatch:
@@ -17,20 +17,10 @@ on:
           - standalone
           - onefile
 
-      include_assets:
-        description: '是否包含 assets 文件夹'
-        type: boolean
-        required: false
-        default: true
-
 jobs:
   build:
-    name: 🚀 Build on ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [windows-latest]
-    
-    runs-on: ${{ matrix.os }}
+    name: 🚀 Build on Windows
+    runs-on: windows-latest
     
     steps:
       - name: Check-out repository
@@ -43,73 +33,96 @@ jobs:
           cache: 'pip'
           cache-dependency-path: 'requirements.txt'
 
-      - name: Install Dependencies & Prepare Icon
+      - name: 🛡️ 环境自检与修复 (关键步骤)
         shell: python
+        # 强制 UTF-8 避免中文报错
         env:
           PYTHONIOENCODING: utf-8
         run: |
           import os
-          import subprocess
           import sys
-          import codecs
+          import subprocess
+          from pathlib import Path
 
+          # --- 1. 防止中文输出乱码 ---
           try:
               if sys.stdout.encoding != 'utf-8':
                   sys.stdout.reconfigure(encoding='utf-8')
-          except Exception:
-              pass
+          except: pass
 
-          print("📦 安装 Nuitka 和构建工具...")
+          print(f"{'='*30}\n🛠️ 开始环境自检与修复\n{'='*30}")
+
+          # --- 2. 修复 assets 文件夹缺失导致的崩溃 ---
+          # 你的报错就是这里引起的：Nuitka 找不到 assets 就会死
+          # 修复逻辑：如果不存在，就创建一个空的，保证命令不报错
+          assets_dir = Path("assets")
+          if not assets_dir.exists():
+              print("⚠️ 未检测到 assets 文件夹，正在自动创建空目录以防报错...")
+              assets_dir.mkdir()
+          else:
+              print("✅ 检测到 assets 资源文件夹")
+
+          # --- 3. 安装基础工具 ---
+          print("📦 安装构建依赖...")
           subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
           subprocess.check_call([sys.executable, "-m", "pip", "install", "wheel", "nuitka", "zstandard", "pillow"])
 
-          print("🔥 安装 CPU 版 Torch...")
+          # --- 4. 智能安装 Torch (CPU版) ---
+          print("🔥 安装 CPU 版 Torch (加速打包)...")
           subprocess.check_call([sys.executable, "-m", "pip", "install", "torch", "torchvision", "torchaudio", "--index-url", "https://download.pytorch.org/whl/cpu"])
 
+          # --- 5. 智能解析 requirements.txt ---
           if os.path.exists("requirements.txt"):
               print("📚 解析 requirements.txt...")
               valid_deps = []
-              with open("requirements.txt", "r", encoding="utf-8") as f:
-                  for line in f:
-                      line = line.strip()
-                      if not line or line.startswith('#'): continue
-                      if "torch" in line.lower(): continue
-                      if "pyside6" in line.lower(): continue 
-                      valid_deps.append(line)
+              try:
+                  with open("requirements.txt", "r", encoding="utf-8") as f:
+                      lines = f.readlines()
+              except UnicodeDecodeError:
+                  # 防止 ANSI 编码导致报错
+                  with open("requirements.txt", "r", encoding="gbk") as f:
+                      lines = f.readlines()
+                      
+              for line in lines:
+                  line = line.strip()
+                  # 过滤注释、空行
+                  if not line or line.startswith('#'): continue
+                  # 过滤已手动安装的冲突包
+                  if "torch" in line.lower(): continue
+                  if "pyside6" in line.lower(): continue 
+                  valid_deps.append(line)
               
               if valid_deps:
-                  print(f"📦 安装 {len(valid_deps)} 个依赖包...")
+                  print(f"📦 安装 {len(valid_deps)} 个项目依赖...")
                   subprocess.check_call([sys.executable, "-m", "pip", "install"] + valid_deps)
           else:
-              print("⚠️ 未找到 requirements.txt，安装默认库...")
+              print("⚠️ 未找到 requirements.txt，安装默认游戏库...")
               subprocess.check_call([sys.executable, "-m", "pip", "install", "pygame", "numpy", "pandas", "opencv-python", "PyQt5"])
 
-          print("🎨 处理图标...")
-          from PIL import Image
+          # --- 6. 终极图标修复 (防止图标缺失报错) ---
+          print("🎨 图标检查与生成...")
+          from PIL import Image, ImageDraw
           
           icon_target = "icon.ico"
-          source_imgs = ["icon.ico", "480x480.png", "108x108.png", "28x28.png", "icon.png", "logo.png"]
+          # 如果 icon.ico 不存在，找其他图片转；如果连其他图片都没有，直接画一个！
+          if not os.path.exists(icon_target):
+              source_imgs = ["480x480.png", "108x108.png", "28x28.png", "icon.png", "logo.png"]
+              found = False
+              for img in source_imgs:
+                  if os.path.exists(img):
+                      print(f"🔄 将 {img} 转换为 icon.ico")
+                      Image.open(img).save(icon_target, format='ICO', sizes=[(256,256)])
+                      found = True
+                      break
+              
+              if not found:
+                  print("⚠️ 未找到任何图片，正在生成默认蓝色图标...")
+                  img = Image.new('RGB', (256, 256), color = (73, 109, 137))
+                  d = ImageDraw.Draw(img)
+                  d.text((10,10), "GAME", fill=(255,255,0))
+                  img.save(icon_target, format='ICO')
           
-          found_icon = False
-          
-          if os.path.exists(icon_target):
-              print(f"✅ 发现现成的 {icon_target}")
-              found_icon = True
-          else:
-              for img_name in source_imgs:
-                  if os.path.exists(img_name):
-                      print(f"🔄 正在转换 {img_name}...")
-                      try:
-                          img = Image.open(img_name)
-                          img.save(icon_target, format='ICO', sizes=[(256, 256), (128, 128), (64, 64), (48, 48), (32, 32), (16, 16)])
-                          print(f"✅ 转换成功")
-                          found_icon = True
-                          break
-                      except Exception as e:
-                          print(f"❌ 转换失败: {e}")
-          
-          if found_icon:
-              with open("HAS_ICON", "w") as f: f.write("yes")
+          print("✅ 环境准备完毕！")
 
       - name: Build with Nuitka
         uses: Nuitka/Nuitka-Action@main
@@ -118,9 +131,9 @@ jobs:
           script-name: ${{ inputs.script_name }}
           mode: ${{ inputs.build_mode }}
           
-          # === 插件配置 (关键修复) ===
-          # 1. 删除了 pygame (Nuitka 现在自动支持，不需要插件)
-          # 2. 保留 pyqt5 (手动开启更稳)
+          # === 插件配置 ===
+          # 移除了所有可能导致报错的插件，只保留最稳的
+          # Nuitka 现在的自动检测已经很强了
           enable-plugins: |
             numpy
             torch
@@ -132,10 +145,11 @@ jobs:
           assume-yes-for-downloads: true
           lto: no
           
+          # 强制指定图标（上一步脚本保证了文件一定存在）
           windows-icon-from-ico: icon.ico
           
-          include-data-dir: |
-            ${{ inputs.include_assets && 'assets=assets' || '' }}
+          # 强制包含 assets（上一步脚本保证了文件夹一定存在）
+          include-data-dir: assets=assets
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
