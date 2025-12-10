@@ -1,14 +1,12 @@
 name: ☁️ 云端 Nuitka 极速打包
 
-# 触发方式：手动点击按钮触发 (Workflow Dispatch)
-# 这样你可以像使用 GUI 软件一样输入参数
 on:
   workflow_dispatch:
     inputs:
       script_name:
         description: 'Python 入口脚本文件名 (例如 main.py)'
         required: true
-        default: 'main.py'  # 修改这里为你游戏的默认文件名
+        default: 'main.py'
       
       build_mode:
         description: '打包模式 (standalone=文件夹, onefile=单文件)'
@@ -20,7 +18,7 @@ on:
           - onefile
 
       include_assets:
-        description: '是否包含 assets 文件夹 (默认包含)'
+        description: '是否包含 assets 文件夹'
         type: boolean
         required: false
         default: true
@@ -31,28 +29,21 @@ jobs:
     runs-on: windows-latest
     
     steps:
-      # 1. 拉取代码
       - name: Check-out repository
         uses: actions/checkout@v4
 
-      # 2. 配置 Python 环境
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10' # 推荐 3.10，兼容性最好
-          cache: 'pip' # 开启缓存，第二次打包会变快
+          python-version: '3.10'
+          cache: 'pip'
 
-      # 3. 安装依赖 (关键步骤)
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          
-          # 优先安装 wheel 和 nuitka
           pip install wheel nuitka zstandard
 
-          # --- 针对游戏的特殊优化 ---
-          # 如果你的 requirements.txt 里有 torch，GitHub 可能会下载巨大的 CUDA 版
-          # 这里强制安装 CPU 版 Torch，体积减小 2GB+，且打包更快
+          # 强制安装 CPU 版 Torch (减小体积，防止打包卡死)
           pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
           
           # 安装项目其他的依赖
@@ -61,42 +52,39 @@ jobs:
             Get-Content requirements.txt | Where-Object { $_ -notmatch "torch" } | Set-Content requirements_no_torch.txt
             pip install -r requirements_no_torch.txt
           } else {
-            echo "⚠️ 没有找到 requirements.txt，尝试手动安装常用库..."
+            echo "⚠️ 没有找到 requirements.txt，安装默认游戏库..."
             pip install pygame numpy pandas opencv-python pillow
           }
 
-      # 4. 执行 Nuitka 打包
       - name: Build with Nuitka
         uses: Nuitka/Nuitka-Action@main
         with:
           nuitka-version: main
           script-name: ${{ inputs.script_name }}
-          
-          # 模式选择
           mode: ${{ inputs.build_mode }}
           
-          # --- 插件配置 (根据你的项目自动开启) ---
-          # Nuitka-Action 会自动检测代码里的 import，但显式开启更稳
+          # === 插件配置 ===
           enable-plugins: numpy,torch,tk-inter,pyside6,pygame
           
-          # --- 高级参数 ---
-          # 禁用控制台窗口 (游戏通常不需要黑框)
-          windows-disable-console: true
+          # === 窗口与控制台设置 (这里修复了报错) ===
+          disable-console: true
           
-          # 自动下载 MinGW64 编译器 (GitHub Actions 环境会自动处理)
+          # 如果需要管理员权限，取消下面这行的注释
+          # windows-uac-admin: true
+          
+          # === 编译环境 ===
           assume-yes-for-downloads: true
+          lto: no  # 建议关闭 LTO 以提高 GitHub Actions 上的打包成功率（防止超时）
           
-          # 如果你有图标，请确保项目根目录有 icon.ico，或者删除这行
-          # windows-icon-from-ico: icon.ico 
+          # === 图标 (如果有 icon.ico 存在则生效) ===
+          # 注意：如果你的根目录没有 icon.ico，请删除下面这行，否则会报错
+          # windows-icon-from-ico: icon.ico
           
-          # --- 资源文件处理 ---
+          # === 资源文件处理 ===
           # 格式: 源路径=目标路径
-          # 如果你勾选了 include_assets 且目录存在，这里会生效
-          # 注意：需要在 script-name 同级目录下有 assets 文件夹
           include-data-dir: |
             ${{ inputs.include_assets && 'assets=assets' || '' }}
 
-      # 5. 上传打包结果
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
