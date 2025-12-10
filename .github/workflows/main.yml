@@ -1,40 +1,108 @@
-name: 用 Nuitka 打包成 EXE
+name: ☁️ 云端 Nuitka 极速打包
 
-on: [push, workflow_dispatch]  # 每次推代码或手动触发
+# 触发方式：手动点击按钮触发 (Workflow Dispatch)
+# 这样你可以像使用 GUI 软件一样输入参数
+on:
+  workflow_dispatch:
+    inputs:
+      script_name:
+        description: 'Python 入口脚本文件名 (例如 main.py)'
+        required: true
+        default: 'main.py'  # 修改这里为你游戏的默认文件名
+      
+      build_mode:
+        description: '打包模式 (standalone=文件夹, onefile=单文件)'
+        required: true
+        default: 'standalone' 
+        type: choice
+        options:
+          - standalone
+          - onefile
+
+      include_assets:
+        description: '是否包含 assets 文件夹 (默认包含)'
+        type: boolean
+        required: false
+        default: true
 
 jobs:
   build:
-    runs-on: windows-latest  # Windows exe；可改成 macos-latest 或 ubuntu-latest
+    name: 🚀 Nuitka 构建 (Windows)
+    runs-on: windows-latest
+    
     steps:
-    - name: 检查仓库代码
-      uses: actions/checkout@v4
+      # 1. 拉取代码
+      - name: Check-out repository
+        uses: actions/checkout@v4
 
-    - name: 设置 Python 环境
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.12'  # 你的 Python 版本
+      # 2. 配置 Python 环境
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10' # 推荐 3.10，兼容性最好
+          cache: 'pip' # 开启缓存，第二次打包会变快
 
-    - name: 安装依赖
-      run: |
-        pip install -r requirements.txt  # 自动装 rembg 等
+      # 3. 安装依赖 (关键步骤)
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          
+          # 优先安装 wheel 和 nuitka
+          pip install wheel nuitka zstandard
 
-    - name: 用 Nuitka 打包（单文件 + 隐藏控制台 + 图标）
-      uses: Nuitka/Nuitka-Action@main  # 官方 Action
-      with:
-        nuitka-version: main  # 用最新版 Nuitka
-        script-name: 游戏精灵图生成.py  # 你的脚本名
-        mode: standalone  # 单文件模式（生成 .exe）
-        enable-plugins: tk-inter  # 支持 Tkinter GUI（如果你的项目用）
-        include-data-dir: models=models  # 打包模型目录
-        # 图标：支持 PNG 自动转 ICO
-        windows-icon-from-ico: 480x480.png  # EXE 图标
-        # 窗口/任务栏图标：用 include-data-files
-        include-data-files: 28x28.png=icons/28x28.png
-        include-data-files: 108x108.png=icons/108x108.png
+          # --- 针对游戏的特殊优化 ---
+          # 如果你的 requirements.txt 里有 torch，GitHub 可能会下载巨大的 CUDA 版
+          # 这里强制安装 CPU 版 Torch，体积减小 2GB+，且打包更快
+          pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+          
+          # 安装项目其他的依赖
+          if (Test-Path "requirements.txt") {
+            # 排除掉 requirements.txt 里的 torch 防止覆盖安装
+            Get-Content requirements.txt | Where-Object { $_ -notmatch "torch" } | Set-Content requirements_no_torch.txt
+            pip install -r requirements_no_torch.txt
+          } else {
+            echo "⚠️ 没有找到 requirements.txt，尝试手动安装常用库..."
+            pip install pygame numpy pandas opencv-python pillow
+          }
 
-    - name: 上传打包好的 exe
-      uses: actions/upload-artifact@v4
-      with:
-        name: 游戏精灵图生成-EXE
-        path: build/  # 输出目录（包含 .exe 和 .libs）
-        include-hidden-files: true  # 包含隐藏文件，避免遗漏
+      # 4. 执行 Nuitka 打包
+      - name: Build with Nuitka
+        uses: Nuitka/Nuitka-Action@main
+        with:
+          nuitka-version: main
+          script-name: ${{ inputs.script_name }}
+          
+          # 模式选择
+          mode: ${{ inputs.build_mode }}
+          
+          # --- 插件配置 (根据你的项目自动开启) ---
+          # Nuitka-Action 会自动检测代码里的 import，但显式开启更稳
+          enable-plugins: numpy,torch,tk-inter,pyside6,pygame
+          
+          # --- 高级参数 ---
+          # 禁用控制台窗口 (游戏通常不需要黑框)
+          windows-disable-console: true
+          
+          # 自动下载 MinGW64 编译器 (GitHub Actions 环境会自动处理)
+          assume-yes-for-downloads: true
+          
+          # 如果你有图标，请确保项目根目录有 icon.ico，或者删除这行
+          # windows-icon-from-ico: icon.ico 
+          
+          # --- 资源文件处理 ---
+          # 格式: 源路径=目标路径
+          # 如果你勾选了 include_assets 且目录存在，这里会生效
+          # 注意：需要在 script-name 同级目录下有 assets 文件夹
+          include-data-dir: |
+            ${{ inputs.include_assets && 'assets=assets' || '' }}
+
+      # 5. 上传打包结果
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Game_Build_${{ github.run_number }}
+          path: |
+            build/*.exe
+            build/*.dist/**/*
+            build/*.bin
+          if-no-files-found: warn
