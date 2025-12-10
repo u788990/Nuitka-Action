@@ -1,4 +1,4 @@
-name: ☁️ 云端 Nuitka 极速打包 (v2.1 Fix)
+name: ☁️ 云端 Nuitka 极速打包 (v2.2 Fix Requirements)
 
 on:
   workflow_dispatch:
@@ -43,10 +43,8 @@ jobs:
           cache: 'pip'
           cache-dependency-path: 'requirements.txt'
 
-      # === 修复点在这里 ===
       - name: Install Dependencies & Prepare Icon
         shell: python
-        # 关键修复 1：设置环境变量强制 UTF-8 输出
         env:
           PYTHONIOENCODING: utf-8
         run: |
@@ -55,7 +53,7 @@ jobs:
           import sys
           import codecs
 
-          # 关键修复 2：在代码内部强制重置标准输出编码，防止 crash
+          # 强制重置编码
           try:
               if sys.stdout.encoding != 'utf-8':
                   sys.stdout.reconfigure(encoding='utf-8')
@@ -70,12 +68,25 @@ jobs:
           subprocess.check_call([sys.executable, "-m", "pip", "install", "torch", "torchvision", "torchaudio", "--index-url", "https://download.pytorch.org/whl/cpu"])
 
           if os.path.exists("requirements.txt"):
-              print("📚 安装 requirements.txt...")
-              with open("requirements.txt", "r", encoding="utf-8") as f:
-                  deps = [line.strip() for line in f if "torch" not in line.lower() and line.strip()]
+              print("📚 解析 requirements.txt...")
               
-              if deps:
-                  subprocess.check_call([sys.executable, "-m", "pip", "install"] + deps)
+              # 关键修复：正确过滤注释行和 torch 相关包
+              valid_deps = []
+              with open("requirements.txt", "r", encoding="utf-8") as f:
+                  for line in f:
+                      line = line.strip()
+                      # 跳过空行和注释行
+                      if not line or line.startswith('#'):
+                          continue
+                      # 跳过 torch (已经单独装了CPU版)
+                      if "torch" in line.lower():
+                          continue
+                      valid_deps.append(line)
+              
+              if valid_deps:
+                  print(f"📦 安装 {len(valid_deps)} 个依赖包...")
+                  # 将过滤后的包名一次性传递给 pip
+                  subprocess.check_call([sys.executable, "-m", "pip", "install"] + valid_deps)
           else:
               print("⚠️ 未找到 requirements.txt，安装默认库...")
               subprocess.check_call([sys.executable, "-m", "pip", "install", "pygame", "numpy", "pandas", "opencv-python"])
@@ -115,11 +126,13 @@ jobs:
           mode: ${{ inputs.build_mode }}
           follow-imports: true
           
+          # 针对你的依赖列表，显式开启 rembg 所需的 onnxruntime 支持
           enable-plugins: |
             numpy
             torch
             tk-inter
             pyside6
+            pyqt5
             pygame
             anti-bloat
           
