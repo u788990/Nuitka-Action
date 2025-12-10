@@ -1,0 +1,40 @@
+name: 用 Nuitka 打包成 EXE
+
+on: [push, workflow_dispatch]  # 每次推代码或手动触发
+
+jobs:
+  build:
+    runs-on: windows-latest  # Windows exe；可改成 macos-latest 或 ubuntu-latest
+    steps:
+    - name: 检查仓库代码
+      uses: actions/checkout@v4
+
+    - name: 设置 Python 环境
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'  # 你的 Python 版本
+
+    - name: 安装依赖
+      run: |
+        pip install -r requirements.txt  # 自动装 rembg 等
+
+    - name: 用 Nuitka 打包（单文件 + 隐藏控制台 + 图标）
+      uses: Nuitka/Nuitka-Action@main  # 官方 Action
+      with:
+        nuitka-version: main  # 用最新版 Nuitka
+        script-name: 游戏精灵图生成.py  # 你的脚本名
+        mode: standalone  # 单文件模式（生成 .exe）
+        enable-plugins: tk-inter  # 支持 Tkinter GUI（如果你的项目用）
+        include-data-dir: models=models  # 打包模型目录
+        # 图标：支持 PNG 自动转 ICO
+        windows-icon-from-ico: 480x480.png  # EXE 图标
+        # 窗口/任务栏图标：用 include-data-files
+        include-data-files: 28x28.png=icons/28x28.png
+        include-data-files: 108x108.png=icons/108x108.png
+
+    - name: 上传打包好的 exe
+      uses: actions/upload-artifact@v4
+      with:
+        name: 游戏精灵图生成-EXE
+        path: build/  # 输出目录（包含 .exe 和 .libs）
+        include-hidden-files: true  # 包含隐藏文件，避免遗漏
