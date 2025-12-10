@@ -1,4 +1,4 @@
-name: ☁️ 云端 Nuitka 极速打包 (v2.3 Final Fix)
+name: ☁️ 云端 Nuitka 极速打包 (v2.4 Fix Pygame)
 
 on:
   workflow_dispatch:
@@ -72,7 +72,6 @@ jobs:
               with open("requirements.txt", "r", encoding="utf-8") as f:
                   for line in f:
                       line = line.strip()
-                      # 跳过空行、注释、torch(已装)、pyside6(冲突)
                       if not line or line.startswith('#'): continue
                       if "torch" in line.lower(): continue
                       if "pyside6" in line.lower(): continue 
@@ -118,16 +117,15 @@ jobs:
           nuitka-version: main
           script-name: ${{ inputs.script_name }}
           mode: ${{ inputs.build_mode }}
-          follow-imports: true
           
           # === 插件配置 (关键修复) ===
-          # 删除了 pyside6，保留 pyqt5，解决冲突
+          # 1. 删除了 pygame (Nuitka 现在自动支持，不需要插件)
+          # 2. 保留 pyqt5 (手动开启更稳)
           enable-plugins: |
             numpy
             torch
             tk-inter
             pyqt5
-            pygame
             anti-bloat
           
           disable-console: true
