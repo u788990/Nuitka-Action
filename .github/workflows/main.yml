@@ -21,7 +21,7 @@ jobs:
   build:
     name: 🚀 Build on Windows
     runs-on: windows-latest
-    timeout-minutes: 60  # 防止无限制卡死
+    timeout-minutes: 90  # 增加超时时间到90分钟
     
     steps:
       - name: Check-out repository
@@ -105,6 +105,18 @@ jobs:
               d.text((20,100), "APP", fill=(255,255,255))
               img.save(icon_target, format='ICO')
 
+      # === 2. Nuitka 缓存配置 ===
+      - name: Setup Nuitka Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/nuitka_cache
+            ~\AppData\Local\Nuitka
+          key: nuitka-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            nuitka-${{ runner.os }}-
+
+      # === 3. Nuitka 编译 ===
       - name: Build with Nuitka
         uses: Nuitka/Nuitka-Action@main
         with:
@@ -112,8 +124,90 @@ jobs:
           script-name: ${{ inputs.script_name }}
           mode: ${{ inputs.build_mode }}
           
-          # === 核心优化：瘦身 ===
-          # 1. 彻底剔除 sympy (导致崩溃的元凶)
-          # 2. 彻底剔除 tkinter (你用了PyQt5，不需要这个)
-          # 3. 剔除单元测试 (unittest)
-          nofollow-import-to:
+          # === 核心优化：瘦身与性能 ===
+          # 排除不需要的模块以减少编译时间和体积
+          nofollow-import-to: |
+            sympy
+            tkinter
+            unittest
+            test
+            tests
+            scipy.linalg
+            matplotlib.tests
+            numba.cuda
+            numba.tests
+            pytest
+            setuptools
+            distutils
+            doctest
+          
+          # 启用 PyQt5 插件
+          enable-plugins: pyqt5,anti-bloat
+          
+          # 模块参数配置
+          module-parameter: |
+            numba-disable-jit=yes
+            torch-disable-jit=yes
+          
+          # 包含数据文件
+          include-data-dir: assets=assets
+          
+          # Windows 图标
+          windows-icon-from-ico: icon.ico
+          
+          # 禁用控制台窗口（GUI应用）
+          windows-disable-console: true
+          
+          # 输出目录
+          output-dir: build
+          
+          # 自动下载依赖
+          assume-yes-for-downloads: true
+          
+          # 优化级别
+          lto: no
+          
+          # 公司信息（可选）
+          company-name: "Your Company"
+          product-name: "Your Product"
+          file-version: "1.0.0.0"
+          product-version: "1.0.0.0"
+          file-description: "Python Application"
+
+      # === 4. 上传构建产物 ===
+      - name: 📦 Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windows-Build-${{ inputs.build_mode }}
+          path: |
+            build/*.exe
+            build/*.dist/
+          retention-days: 30
+
+      # === 5. 构建信息输出 ===
+      - name: 📊 Build Summary
+        if: always()
+        shell: python
+        run: |
+          import os
+          from pathlib import Path
+          
+          print("\n" + "="*50)
+          print("🎉 构建完成")
+          print("="*50)
+          
+          build_dir = Path("build")
+          if build_dir.exists():
+              files = list(build_dir.rglob("*.exe"))
+              if files:
+                  print(f"\n✅ 生成了 {len(files)} 个可执行文件:")
+                  for f in files:
+                      size_mb = f.stat().st_size / (1024*1024)
+                      print(f"  📄 {f.name} ({size_mb:.2f} MB)")
+              else:
+                  print("\n⚠️ 未找到 .exe 文件")
+          else:
+              print("\n❌ build 目录不存在")
+          
+          print("\n💡 提示: 请在 Actions 页面下载构建产物")
+          print("="*50)
