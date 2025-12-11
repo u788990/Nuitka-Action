@@ -1,4 +1,4 @@
-name: ☁️ 云端 Nuitka 极速打包 (v3.2 截肢求生版)
+name: ☁️ 云端 Nuitka 极速打包 (v4.0 性能平衡版)
 
 on:
   workflow_dispatch:
@@ -21,12 +21,13 @@ jobs:
   build:
     name: 🚀 Build on Windows
     runs-on: windows-latest
+    timeout-minutes: 60  # 防止无限制卡死
     
     steps:
       - name: Check-out repository
         uses: actions/checkout@v4
 
-      # === 1. 虚拟内存配置 (加强版) ===
+      # === 1. 虚拟内存配置 (保持高内存防崩溃) ===
       - name: Configure Pagefile
         uses: al-cheb/configure-pagefile-action@v1.3
         with:
@@ -46,14 +47,9 @@ jobs:
         env:
           PYTHONIOENCODING: utf-8
         run: |
-          import os
-          import sys
-          import subprocess
+          import os, sys, subprocess
           from pathlib import Path
-
-          try:
-              if sys.stdout.encoding != 'utf-8':
-                  sys.stdout.reconfigure(encoding='utf-8')
+          try: sys.stdout.reconfigure(encoding='utf-8')
           except: pass
 
           print(f"{'='*30}\n🛠️ 环境自检\n{'='*30}")
@@ -87,7 +83,6 @@ jobs:
                   line = line.strip()
                   if not line or line.startswith('#'): continue
                   if "torch" in line.lower(): continue
-                  # 过滤掉 PyQt6/PySide6 防止冲突，只留 PyQt5
                   if "pyside6" in line.lower(): continue 
                   if "pyqt6" in line.lower(): continue
                   valid_deps.append(line)
@@ -117,41 +112,8 @@ jobs:
           script-name: ${{ inputs.script_name }}
           mode: ${{ inputs.build_mode }}
           
-          # === 关键修复：禁止跟随 sympy ===
-          # 这会告诉 Nuitka：不要去编译 sympy 库
-          # 这样就彻底避开了那个导致崩溃的 C 文件
-          nofollow-import-to: sympy
-          
-          # === 开启低内存模式 ===
-          low-memory: true
-          
-          # 限制并发，防止内存爆炸
-          jobs: 1
-          
-          # 插件配置
-          enable-plugins: |
-            tk-inter
-            pyqt5
-            anti-bloat
-          
-          # 排除 numba (日志警告里提到的拖慢因素)
-          noinclude-numba-mode: nofollow
-          
-          # 关闭控制台
-          windows-console-mode: disable
-          
-          assume-yes-for-downloads: true
-          lto: no
-          
-          windows-icon-from-ico: icon.ico
-          include-data-dir: assets=assets
-
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: Game_Build_${{ github.run_number }}
-          path: |
-            build/*.exe
-            build/*.dist/**/*
-            build/*.bin
-          if-no-files-found: warn
+          # === 核心优化：瘦身 ===
+          # 1. 彻底剔除 sympy (导致崩溃的元凶)
+          # 2. 彻底剔除 tkinter (你用了PyQt5，不需要这个)
+          # 3. 剔除单元测试 (unittest)
+          nofollow-import-to:
