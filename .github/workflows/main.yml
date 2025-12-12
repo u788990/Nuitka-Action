@@ -21,13 +21,13 @@ jobs:
   build:
     name: 🚀 Build on Windows
     runs-on: windows-latest
-    timeout-minutes: 120  # 增加超时时间到120分钟，避免大型项目超时
+    timeout-minutes: 120
 
     steps:
       - name: Check-out repository
         uses: actions/checkout@v4
 
-      # === 1. 虚拟内存配置 (高内存防崩溃) ===
+      # === 1. 虚拟内存配置 ===
       - name: Configure Pagefile
         uses: al-cheb/configure-pagefile-action@v1.4
         with:
@@ -38,101 +38,100 @@ jobs:
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'  # 使用3.11更稳定，3.12对某些包支持可能不完整
+          python-version: '3.11'
           cache: 'pip'
           cache-dependency-path: 'requirements.txt'
 
       - name: 🛡️ 环境自检与修复
-        shell: cmd
+        shell: pwsh
         run: |
-          chcp 65001
-          python -X utf8 -c "
-import os, sys, subprocess
-from pathlib import Path
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          $env:PYTHONIOENCODING = "utf-8"
+          
+          Write-Host "==============================" -ForegroundColor Cyan
+          Write-Host "Environment Setup" -ForegroundColor Cyan
+          Write-Host "==============================" -ForegroundColor Cyan
+          
+          # 创建 assets 目录
+          if (-not (Test-Path "assets")) {
+              Write-Host "[WARN] Creating empty assets directory..."
+              New-Item -ItemType Directory -Path "assets" -Force | Out-Null
+              New-Item -ItemType File -Path "assets/.keep" -Force | Out-Null
+          }
+          
+          # 升级 pip
+          Write-Host "[INFO] Upgrading pip..."
+          python -m pip install --upgrade pip -q
+          
+          # 安装基础工具
+          Write-Host "[INFO] Installing build tools..."
+          python -m pip install wheel nuitka zstandard pillow -q
+          
+          # 安装 Torch CPU 版本
+          Write-Host "[INFO] Installing CPU Torch..."
+          python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu -q
+          
+          # 解析并安装 requirements.txt
+          if (Test-Path "requirements.txt") {
+              Write-Host "[INFO] Parsing requirements.txt..."
+              $content = Get-Content "requirements.txt" -Encoding UTF8
+              $validDeps = @()
+              $skipKeywords = @("torch", "pyside6", "pyqt6", "numba")
+              
+              foreach ($line in $content) {
+                  $line = $line.Trim()
+                  if ([string]::IsNullOrEmpty($line) -or $line.StartsWith("#")) { continue }
+                  
+                  $skip = $false
+                  foreach ($kw in $skipKeywords) {
+                      if ($line.ToLower().Contains($kw)) { $skip = $true; break }
+                  }
+                  if (-not $skip) { $validDeps += $line }
+              }
+              
+              if ($validDeps.Count -gt 0) {
+                  Write-Host "[INFO] Installing $($validDeps.Count) dependencies..."
+                  foreach ($dep in $validDeps) {
+                      try {
+                          python -m pip install $dep -q 2>$null
+                      } catch {
+                          Write-Host "[WARN] Skipped: $dep"
+                      }
+                  }
+              }
+          } else {
+              Write-Host "[WARN] No requirements.txt, installing defaults..."
+              python -m pip install pygame numpy pandas opencv-python PyQt5 -q
+          }
+          
+          # 图标生成
+          Write-Host "[INFO] Checking icon..."
+          if (-not (Test-Path "icon.ico")) {
+              Write-Host "[WARN] Generating default icon..."
+              python -c @"
+          from PIL import Image, ImageDraw
+          img = Image.new('RGB', (256, 256), color=(0, 120, 215))
+          d = ImageDraw.Draw(img)
+          d.text((100, 110), 'APP', fill=(255, 255, 255))
+          img.save('icon.ico', format='ICO')
+          "@
+              Write-Host "[INFO] Default icon created."
+          }
+          
+          Write-Host "[INFO] Environment setup completed."
 
-# 设置UTF-8编码
-os.environ['PYTHONIOENCODING'] = 'utf-8'
+      # === 2. Nuitka 缓存配置 ===
+      - name: Setup Nuitka Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/nuitka_cache
+            ~\AppData\Local\Nuitka
+          key: nuitka-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            nuitka-${{ runner.os }}-
 
-print('=' * 30)
-print('[ENV CHECK] Environment Setup')
-print('=' * 30)
-
-# 修复 assets
-assets_dir = Path('assets')
-if not assets_dir.exists():
-    print('[WARN] Creating empty assets directory...')
-    assets_dir.mkdir()
-    (assets_dir / '.keep').touch()
-
-# 升级 pip
-print('[INFO] Upgrading pip...')
-subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--upgrade', 'pip', '-q'])
-
-# 安装基础工具
-print('[INFO] Installing build tools...')
-subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'wheel', 'nuitka', 'zstandard', 'pillow', '-q'])
-
-# 安装 Torch CPU 版本
-print('[INFO] Installing CPU Torch...')
-subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'torch', 'torchvision', 'torchaudio', '--index-url', 'https://download.pytorch.org/whl/cpu', '-q'])
-
-# 解析并安装 requirements.txt
-if os.path.exists('requirements.txt'):
-    print('[INFO] Parsing requirements.txt...')
-    valid_deps = []
-    encodings_to_try = ['utf-8', 'utf-8-sig', 'gbk', 'latin-1']
-    lines = []
-    
-    for enc in encodings_to_try:
-        try:
-            with open('requirements.txt', 'r', encoding=enc) as f:
-                lines = f.readlines()
-            break
-        except (UnicodeDecodeError, LookupError):
-            continue
-    
-    skip_keywords = ['torch', 'pyside6', 'pyqt6', 'numba']
-    for line in lines:
-        line = line.strip()
-        if not line or line.startswith('#'):
-            continue
-        line_lower = line.lower()
-        if any(kw in line_lower for kw in skip_keywords):
-            continue
-        valid_deps.append(line)
-    
-    if valid_deps:
-        print(f'[INFO] Installing {len(valid_deps)} dependencies...')
-        try:
-            subprocess.check_call([sys.executable, '-m', 'pip', 'install'] + valid_deps + ['-q'])
-        except subprocess.CalledProcessError as e:
-            print(f'[WARN] Some dependencies failed: {e}')
-            # 逐个安装，跳过失败的
-            for dep in valid_deps:
-                try:
-                    subprocess.check_call([sys.executable, '-m', 'pip', 'install', dep, '-q'])
-                except:
-                    print(f'[WARN] Skipped: {dep}')
-else:
-    print('[WARN] No requirements.txt found, installing defaults...')
-    subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'pygame', 'numpy', 'pandas', 'opencv-python', 'PyQt5', '-q'])
-
-# 图标生成
-print('[INFO] Checking icon...')
-from PIL import Image, ImageDraw
-icon_target = 'icon.ico'
-if not os.path.exists(icon_target):
-    print('[WARN] Generating default icon...')
-    img = Image.new('RGB', (256, 256), color=(0, 120, 215))
-    d = ImageDraw.Draw(img)
-    d.text((100, 110), 'APP', fill=(255, 255, 255))
-    img.save(icon_target, format='ICO')
-    print('[INFO] Default icon created.')
-
-print('[INFO] Environment setup completed.')
-"
-
-      # === 2. Nuitka 编译 ===
+      # === 3. Nuitka 编译 ===
       - name: Build with Nuitka
         uses: Nuitka/Nuitka-Action@main
         with:
@@ -140,7 +139,6 @@ print('[INFO] Environment setup completed.')
           script-name: ${{ inputs.script_name }}
           mode: ${{ inputs.build_mode }}
           
-          # === 排除不需要的模块 ===
           nofollow-import-to: |
             sympy
             tkinter
@@ -154,44 +152,33 @@ print('[INFO] Environment setup completed.')
             distutils
             doctest
           
-          # 启用 PyQt5 插件 (anti-bloat 默认已启用，不需要手动指定)
           enable-plugins: pyqt5
           
-          # 处理 numba - 使用正确的参数排除 numba
           noinclude-numba-mode: nofollow
           
-          # 模块参数配置 - 禁用 torch JIT
           module-parameter: torch-disable-jit=yes
           
-          # 包含数据文件
           include-data-dir: assets=assets
           
-          # Windows 图标
           windows-icon-from-ico: icon.ico
           
-          # 控制台模式 - 使用新的参数名 (GUI应用禁用控制台)
           windows-console-mode: disable
           
-          # 输出目录
           output-dir: build
           
-          # 自动下载依赖
           assume-yes-for-downloads: true
           
-          # 禁用 LTO 加速编译
           lto: no
           
-          # 低内存模式 - 减少内存使用避免崩溃
           low-memory: true
           
-          # 公司信息
           company-name: "Your Company"
           product-name: "Your Product"
           file-version: "1.0.0.0"
           product-version: "1.0.0.0"
           file-description: "Python Application"
 
-      # === 3. 上传构建产物 ===
+      # === 4. 上传构建产物 ===
       - name: 📦 Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -200,45 +187,45 @@ print('[INFO] Environment setup completed.')
             build/*.exe
             build/*.dist/
           retention-days: 30
-          include-hidden-files: true  # 重要：包含隐藏文件如 .libs 文件夹
+          include-hidden-files: true
 
-      # === 4. 构建信息输出 ===
+      # === 5. 构建信息输出 ===
       - name: 📊 Build Summary
         if: always()
-        shell: cmd
+        shell: pwsh
         run: |
-          chcp 65001
-          python -X utf8 -c "
-import os
-from pathlib import Path
-
-print('')
-print('=' * 50)
-print('[BUILD] Build Summary')
-print('=' * 50)
-
-build_dir = Path('build')
-if build_dir.exists():
-    files = list(build_dir.rglob('*.exe'))
-    if files:
-        print(f'')
-        print(f'[SUCCESS] Generated {len(files)} executable(s):')
-        for f in files:
-            size_mb = f.stat().st_size / (1024 * 1024)
-            print(f'  - {f.name} ({size_mb:.2f} MB)')
-    else:
-        print('')
-        print('[WARN] No .exe files found')
-        
-    # 列出 dist 目录
-    dist_dirs = list(build_dir.glob('*.dist'))
-    if dist_dirs:
-        print(f'')
-        print(f'[INFO] Distribution folders:')
-        for d in dist_dirs:
-            total_size = sum(f.stat().st_size for f in d.rglob('*') if f.is_file())
-            print(f'  - {d.name} ({total_size / (1024 * 1024):.2f} MB total)')
-else:
-    print('')
-    print('[ERROR] Build directory does not exist')
-"
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          
+          Write-Host ""
+          Write-Host "==================================================" -ForegroundColor Cyan
+          Write-Host "Build Summary" -ForegroundColor Cyan
+          Write-Host "==================================================" -ForegroundColor Cyan
+          
+          if (Test-Path "build") {
+              $exeFiles = Get-ChildItem -Path "build" -Filter "*.exe" -Recurse
+              if ($exeFiles.Count -gt 0) {
+                  Write-Host ""
+                  Write-Host "[SUCCESS] Generated $($exeFiles.Count) executable(s):" -ForegroundColor Green
+                  foreach ($f in $exeFiles) {
+                      $sizeMB = [math]::Round($f.Length / 1MB, 2)
+                      Write-Host "  - $($f.Name) ($sizeMB MB)"
+                  }
+              } else {
+                  Write-Host ""
+                  Write-Host "[WARN] No .exe files found" -ForegroundColor Yellow
+              }
+              
+              $distDirs = Get-ChildItem -Path "build" -Filter "*.dist" -Directory
+              if ($distDirs.Count -gt 0) {
+                  Write-Host ""
+                  Write-Host "[INFO] Distribution folders:" -ForegroundColor Cyan
+                  foreach ($d in $distDirs) {
+                      $totalSize = (Get-ChildItem -Path $d.FullName -Recurse -File | Measure-Object -Property Length -Sum).Sum
+                      $totalSizeMB = [math]::Round($totalSize / 1MB, 2)
+                      Write-Host "  - $($d.Name) ($totalSizeMB MB total)"
+                  }
+              }
+          } else {
+              Write-Host ""
+              Write-Host "[ERROR] Build directory does not exist" -ForegroundColor Red
+          }
