@@ -8,7 +8,7 @@
 # - 安全退出流程：停止任务 -> 提示用户 -> 延迟退出
 #
 # Dependencies:
-# pip install opencv-python pillow PyQt5 numpy rembg imageio imageio-ffmpeg onnxruntime
+# pip install opencv-python pillow PySide6 numpy rembg imageio imageio-ffmpeg onnxruntime
 
 import sys
 import os
@@ -146,7 +146,7 @@ try:
 except ImportError:
     HAS_PSUTIL = False
 
-from PyQt5.QtWidgets import (
+from PySide6.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QListWidget, QSpinBox, QCheckBox,
     QHBoxLayout, QVBoxLayout, QGridLayout, QFileDialog, QProgressBar, QMessageBox,
     QTextEdit, QComboBox, QRadioButton, QButtonGroup, QGroupBox, QDoubleSpinBox,
@@ -155,8 +155,8 @@ from PyQt5.QtWidgets import (
     QHeaderView, QSizePolicy, QSlider, QSpacerItem, QStackedWidget, QFormLayout,
     QProgressDialog
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QObject, QSize, QSignalBlocker
-from PyQt5.QtGui import QFont, QColor, QPalette, QTextCursor, QIcon, QPixmap, QImage, QPainter, QPen, QBrush
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QObject, QSize, QSignalBlocker
+from PySide6.QtGui import QFont, QColor, QPalette, QTextCursor, QIcon, QPixmap, QImage, QPainter, QPen, QBrush
 
 if False:
     import rembg
@@ -164,6 +164,64 @@ if False:
     import rembg.sessions.isnet
     import onnxruntime
     import onnxruntime.capi.onnxruntime_pybind11_state
+
+# ==================== 图像处理辅助函数 ====================
+def make_square_with_padding(pil_img, padding=1):
+    """
+    将图片裁剪/扩展成正方形，保留指定像素的边距，确保内容居中
+    """
+    if pil_img is None:
+        return None
+        
+    width, height = pil_img.size
+    
+    # 1. 找到内容的边界框（非透明区域）
+    if pil_img.mode == 'RGBA':
+        bbox = pil_img.getbbox()  # 返回 (left, top, right, bottom)
+    else:
+        # 如果不是RGBA，假设整个图片都是内容
+        bbox = (0, 0, width, height)
+    
+    if bbox is None:
+        # 图片完全透明，直接返回一个正方形透明图
+        max_dim = max(width, height)
+        return Image.new('RGBA', (max_dim, max_dim), (0, 0, 0, 0))
+    
+    left, top, right, bottom = bbox
+    content_width = right - left
+    content_height = bottom - top
+    
+    # 2. 计算正方形边长（取内容最大边 + padding*2）
+    square_size = max(content_width, content_height) + padding * 2
+    
+    # 3. 计算内容在正方形中的居中位置
+    center_x = (left + right) // 2
+    center_y = (top + bottom) // 2
+    
+    # 4. 计算裁剪区域
+    crop_left = center_x - square_size // 2
+    crop_top = center_y - square_size // 2
+    crop_right = crop_left + square_size
+    crop_bottom = crop_top + square_size
+    
+    # 5. 创建新的正方形画布并粘贴内容
+    new_img = Image.new('RGBA', (square_size, square_size), (0, 0, 0, 0))
+    
+    # 计算偏移量，将原图内容居中放置
+    offset_x = max(0, -crop_left)
+    offset_y = max(0, -crop_top)
+    
+    # 调整裁剪区域到有效范围
+    src_left = max(0, crop_left)
+    src_top = max(0, crop_top)
+    src_right = min(width, crop_right)
+    src_bottom = min(height, crop_bottom)
+    
+    # 裁剪并粘贴
+    cropped = pil_img.crop((src_left, src_top, src_right, src_bottom))
+    new_img.paste(cropped, (offset_x, offset_y))
+    
+    return new_img
 
 # ==================== 配置管理器 ====================
 class ConfigManager:
@@ -290,7 +348,7 @@ os.environ["REMBG_HOME"] = ConfigManager.get_model_dir()
 
 # ==================== 全局日志系统 ====================
 class LogManager(QObject):
-    log_signal = pyqtSignal(str, str)
+    log_signal = Signal(str, str)
     
     _instance = None
     
@@ -825,7 +883,7 @@ class ColorPickerWidget(QWidget):
         ("#F5F5DC", "米色"),
     ]
     
-    color_changed = pyqtSignal(str)
+    color_changed = Signal(str)
     
     def __init__(self, default_color: str = "#FFFFFF", parent=None):
         super().__init__(parent)
@@ -1055,7 +1113,7 @@ class SpriteEditorDialog(QDialog):
             self._left_preview_update_timer()
         except Exception:
             pass
-        self.select_cols.stateChanged.connect(lambda s: self.table.setSelectionBehavior(QAbstractItemView.SelectColumns if self.select_cols.isChecked() else QAbstractItemView.SelectItems))
+        self.select_cols.toggled.connect(lambda s: self.table.setSelectionBehavior(QAbstractItemView.SelectColumns if self.select_cols.isChecked() else QAbstractItemView.SelectItems))
         self.btn_select_all.clicked.connect(self._select_all)
         self.btn_clear.clicked.connect(self._clear_selection)
         self.scale_slider.valueChanged.connect(self._on_scale_changed)
@@ -1780,7 +1838,7 @@ class LogWidget(QPlainTextEdit):
 class ModelSelector(QComboBox):
     """模型选择器：带状态指示"""
     
-    model_changed = pyqtSignal(str, dict)
+    model_changed = Signal(str, dict)
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1836,9 +1894,14 @@ class ModelSelector(QComboBox):
                 def _on_done(s, mid):
                     logger.success("模型下载并加载完成")
                     self.setEnabled(True)
-                    # 更新状态但避免触发选择变化的递归
+                    # 只更新状态，不刷新列表，避免触发递归
                     ModelManager.scan_models()
+                    # 使用 blockSignals 阻止信号触发
+                    self.blockSignals(True)
+                    current_idx = self.currentIndex()
                     self.refresh_models()
+                    self.setCurrentIndex(current_idx)
+                    self.blockSignals(False)
                 def _on_err(e):
                     logger.error(f"模型加载失败: {e}")
                     self.setEnabled(True)
@@ -2252,9 +2315,9 @@ def process_single_frame(frame_data: tuple, session, params: dict, model_id: str
 # ==================== Workers ====================
 class BaseWorker(QThread):
     """基础 Worker 类"""
-    progress = pyqtSignal(int, str)
-    finished = pyqtSignal(dict)
-    error = pyqtSignal(str)
+    progress = Signal(int, str)
+    finished = Signal(dict)
+    error = Signal(str)
     
     def __init__(self):
         super().__init__()
@@ -2265,8 +2328,8 @@ class BaseWorker(QThread):
         logger.info("正在停止任务...")
 
 class ModelLoadWorker(QThread):
-    finished = pyqtSignal(object, str)
-    error = pyqtSignal(str)
+    finished = Signal(object, str)
+    error = Signal(str)
     def __init__(self, model_id: str):
         super().__init__()
         self.model_id = model_id
@@ -2877,7 +2940,7 @@ class SpriteWorker(BaseWorker):
             self.error.emit(str(e))
 
 class SpriteWorkerWithEditor(BaseWorker):
-    frames_ready = pyqtSignal(list, str)
+    frames_ready = Signal(list, str)
     def __init__(self, source_path: str, output_dir: str, params: dict, parent_window):
         super().__init__()
         self.source_path = Path(source_path)
@@ -2972,7 +3035,7 @@ class SpriteWorkerWithEditor(BaseWorker):
     def _open_editor(self, frames):
         try:
             dialog = SpriteEditorDialog(self.parent_window, source_frames=frames)
-            if dialog.exec_() == QDialog.Accepted:
+            if dialog.exec() == QDialog.Accepted:
                 selected_frames = dialog.get_selected_frames()
                 output_cols = dialog.get_output_cols()
                 if not selected_frames:
@@ -3264,6 +3327,75 @@ class SingleImageWorker(BaseWorker):
                 pil = fill_alpha_with_bg(pil, self.params.get("bg_type"), self.params.get("bg_color"), self.params.get("bg_image"))
             
             pil.save(self.output)
+            
+            # ==================== ICO 生成 ====================
+            if self.params.get("ico_enabled") and self.params.get("ico_sizes"):
+                self.progress.emit(95, "生成 ICO...")
+                try:
+                    ico_sizes = sorted(self.params["ico_sizes"], reverse=True)
+                    
+                    # 【优化】先将图片处理成正方形，避免拉伸变形
+                    # 使用 1px padding
+                    square_pil = make_square_with_padding(pil, padding=1)
+                    
+                    if square_pil:
+                        # 1. 保留透明通道
+                        if self.params.get("ico_transparent"):
+                            # 遍历所有选中的尺寸，分别生成单独的 ICO 文件
+                            for s in ico_sizes:
+                                try:
+                                    # 构建带尺寸后缀的文件名，如 image_32x32.ico
+                                    ico_name = f"{Path(self.output).stem}_{s}x{s}.ico"
+                                    ico_path = Path(self.output).parent / ico_name
+                                    
+                                    resized = square_pil.resize((s, s), Image.LANCZOS)
+                                    # 确保是 RGBA 模式
+                                    if resized.mode != 'RGBA':
+                                        resized = resized.convert('RGBA')
+                                    
+                                    # 保存单个尺寸的 ICO
+                                    resized.save(str(ico_path), format='ICO')
+                                except Exception as ex:
+                                    logger.error(f"生成 {s}x{s} ICO 失败: {ex}")
+                                
+                        # 2. 无透明通道 (白底)
+                        if self.params.get("ico_opaque"):
+                            for s in ico_sizes:
+                                try:
+                                    # 构建带尺寸后缀的文件名，如 image_32x32_noalpha.ico
+                                    ico_name = f"{Path(self.output).stem}_{s}x{s}_noalpha.ico"
+                                    ico_path_opaque = Path(self.output).parent / ico_name
+                                    
+                                    resized = square_pil.resize((s, s), Image.LANCZOS)
+                                    bg = Image.new("RGB", resized.size, (255, 255, 255))
+                                    if resized.mode == 'RGBA':
+                                        bg.paste(resized, mask=resized.split()[3])
+                                    else:
+                                        bg.paste(resized)
+                                    
+                                    # 保存单个尺寸的无透明 ICO
+                                    bg.save(str(ico_path_opaque), format='ICO')
+                                except Exception as ex:
+                                    logger.error(f"生成 {s}x{s} (无透明) ICO 失败: {ex}")
+                        
+                        # 3. 生成 PNG
+                        if self.params.get("ico_png"):
+                            for s in ico_sizes:
+                                try:
+                                    png_name = f"{Path(self.output).stem}_{s}x{s}.png"
+                                    png_path = Path(self.output).parent / png_name
+                                    
+                                    resized = square_pil.resize((s, s), Image.LANCZOS)
+                                    resized.save(str(png_path), format='PNG')
+                                except Exception as ex:
+                                    logger.error(f"生成 {s}x{s} PNG 失败: {ex}")
+                    else:
+                        logger.error("ICO 生成失败: 图片转正方形处理出错")
+                            
+                except Exception as e:
+                    logger.error(f"ICO 生成失败: {e}")
+                    # 不中断主流程
+            
             self.progress.emit(100, "完成")
             gc.collect()
             logger.success(f"图片处理完成")
@@ -3289,7 +3421,7 @@ class MainWindow(QWidget):
             self.activated = True
         else:
             dialog = ActivationDialog(None)
-            if dialog.exec_() == QDialog.Accepted:
+            if dialog.exec() == QDialog.Accepted:
                 if dialog.activated: 
                     self.activated = True
                 elif dialog.trial_mode: 
@@ -3300,7 +3432,7 @@ class MainWindow(QWidget):
         gpu_status = f"GPU: {HardwareInfo.gpu_name}" if HardwareInfo.gpu_available else "CPU模式"
         base_title = f"别快视频精灵图 v7.6 [{gpu_status}]"
         self.setWindowTitle(f"{base_title} - {'已激活' if self.activated else f'试用 (15:00)'}")
-        self.setFixedWidth(800)
+        self.setFixedWidth(600)
         self.setAcceptDrops(True)
         
         self.enable_sound = ConfigManager.get("enable_sound", True)
@@ -3375,7 +3507,7 @@ class MainWindow(QWidget):
     def _show_activation_dialog(self):
         """显示激活对话框"""
         dialog = ActivationDialog(self)
-        if dialog.exec_() == QDialog.Accepted and dialog.activated:
+        if dialog.exec() == QDialog.Accepted and dialog.activated:
             self.activated = True
             self.trial_expired = False
             
@@ -3487,6 +3619,65 @@ class MainWindow(QWidget):
         stop_btn.clicked.connect(self._stop_current_task)
         log_btn_layout.addWidget(stop_btn)
         
+        # 添加操作按钮到日志区域
+        self.action_btns = {}
+        
+        # 精灵图按钮
+        btn = QPushButton("生成精灵图")
+        btn.setObjectName("actionButton")
+        btn.clicked.connect(self.sprite_run)
+        self.action_btns[0] = btn
+        log_btn_layout.addWidget(btn)
+        
+        # 编辑已有精灵图按钮
+        edit_existing_btn = QPushButton("编辑已有精灵图")
+        edit_existing_btn.clicked.connect(self._edit_existing_sprite)
+        edit_existing_btn.hide() # 初始隐藏，随 Tab 切换显示
+        # 将其添加为特殊的 action button，或者在 tab 切换逻辑中单独处理
+        # 这里为了简单，我们把它也加入 action_btns，但 key 可以用个特殊值，或者直接在 tab 0 显示时一起显示
+        self.sprite_edit_btn = edit_existing_btn 
+        log_btn_layout.addWidget(edit_existing_btn)
+        
+        # 视频转图按钮
+        btn = QPushButton("开始提取")
+        btn.setObjectName("actionButton")
+        btn.clicked.connect(self.extract_run)
+        btn.hide()
+        self.action_btns[1] = btn
+        log_btn_layout.addWidget(btn)
+        
+        # 视频扣像按钮
+        btn = QPushButton("开始视频扣像")
+        btn.setObjectName("actionButton")
+        btn.clicked.connect(self.beiou_run)
+        btn.hide()
+        self.action_btns[2] = btn
+        log_btn_layout.addWidget(btn)
+        
+        # 图片转视频按钮
+        btn = QPushButton("合成视频")
+        btn.setObjectName("actionButton")
+        btn.clicked.connect(self.vid_run)
+        btn.hide()
+        self.action_btns[3] = btn
+        log_btn_layout.addWidget(btn)
+        
+        # 视频转GIF按钮
+        btn = QPushButton("生成 GIF")
+        btn.setObjectName("actionButton")
+        btn.clicked.connect(self.gif_run)
+        btn.hide()
+        self.action_btns[4] = btn
+        log_btn_layout.addWidget(btn)
+        
+        # 图片扣图按钮
+        btn = QPushButton("处理图片")
+        btn.setObjectName("actionButton")
+        btn.clicked.connect(self.single_run)
+        btn.hide()
+        self.action_btns[5] = btn
+        log_btn_layout.addWidget(btn)
+        
         log_btn_layout.addStretch()
         log_layout.addLayout(log_btn_layout)
         
@@ -3499,11 +3690,29 @@ class MainWindow(QWidget):
         self.setLayout(main)
         self._apply_compact_layout()
         self._adjust_window_size()
-        self.tabs.currentChanged.connect(lambda _: self._adjust_splitter_to_tab())
+        
+        # 监听 Tab 切换
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+
+    def _on_tab_changed(self, index):
+        """Tab 切换时显示对应的操作按钮"""
+        for i, btn in self.action_btns.items():
+            if i == index:
+                btn.show()
+            else:
+                btn.hide()
+        
+        # 特殊处理编辑已有精灵图按钮
+        if index == 0:
+            self.sprite_edit_btn.show()
+        else:
+            self.sprite_edit_btn.hide()
+        
+        self._adjust_splitter_to_tab()
 
     def _compact_set_width(self, widget, chars):
         try:
-            from PyQt5.QtWidgets import QStyle, QSpinBox, QDoubleSpinBox, QComboBox, QLineEdit
+            from PySide6.QtWidgets import QStyle, QSpinBox, QDoubleSpinBox, QComboBox, QLineEdit
             fm = widget.fontMetrics()
             txt_w = fm.horizontalAdvance('0' * max(1, int(chars)))
             extra = 10
@@ -3605,8 +3814,8 @@ class MainWindow(QWidget):
                 w = self.tabs.widget(i)
                 max_h = max(max_h, w.sizeHint().height())
             logs_min = 160
-            total_h = max_h + logs_min + 120
-            self.setFixedHeight(total_h)
+            total_h = max_h + logs_min + 20
+            self.setFixedHeight(750)
         except Exception:
             pass
 
@@ -3688,7 +3897,11 @@ class MainWindow(QWidget):
         layout.addWidget(src_grp)
 
         model_grp = QGroupBox("AI 模型")
+        model_grp.setFixedHeight(60)  # 强制限制高度
         ml = QGridLayout()
+        ml.setContentsMargins(6,6,6,6)
+        ml.setHorizontalSpacing(6)
+        ml.setVerticalSpacing(4)
         ml.addWidget(QLabel("选择模型:"), 0, 0)
         self.sprite_model = ModelSelector()
         self.sprite_model.model_changed.connect(self._on_model_changed)
@@ -3702,6 +3915,7 @@ class MainWindow(QWidget):
         layout.addWidget(model_grp)
 
         set_grp = QGroupBox("设置")
+        set_grp.setFixedHeight(60)
         sl = QGridLayout()
         sl.setContentsMargins(6, 6, 6, 6)
         sl.setHorizontalSpacing(6)
@@ -3856,37 +4070,41 @@ class MainWindow(QWidget):
                     w.setEnabled(True)
         
         self.sprite_clean_preset.currentTextChanged.connect(_apply_preset)
-        _apply_preset(self.sprite_clean_preset.currentText())
         
-        self.sprite_rembg.stateChanged.connect(lambda s: [
-            self.sprite_clean_preset.setEnabled(s),
-            self.sprite_clean.setEnabled(s), 
-            self.sprite_iso.setEnabled(s),
-            self.sprite_internal.setEnabled(s)
-        ])
+        def _on_sprite_rembg_toggled(checked):
+            self.sprite_clean_preset.setEnabled(checked)
+            self.sprite_clean.setEnabled(checked)
+            self.sprite_iso.setEnabled(checked)
+            self.sprite_internal.setEnabled(checked)
+            
+            if not checked:
+                # 禁用所有数值控件
+                for w in [self.sprite_feather, self.sprite_blur, self.sprite_gamma, self.sprite_iso_area, self.sprite_internal_area]:
+                    w.setEnabled(False)
+            else:
+                # 恢复预设状态 (如果是自定义则启用，否则禁用)
+                _apply_preset(self.sprite_clean_preset.currentText())
+
+        self.sprite_rembg.toggled.connect(_on_sprite_rembg_toggled)
+        # 初始化状态
+        _on_sprite_rembg_toggled(self.sprite_rembg.isChecked())
+        # 确保应用预设值
+        _apply_preset(self.sprite_clean_preset.currentText())
         
         bg_grp.setLayout(bl)
         layout.addWidget(bg_grp)
 
         edit_grp = QGroupBox("编辑模式")
+        edit_grp.setFixedHeight(75)  # 2.5行文本高度
         el = QVBoxLayout()
         hdr = QHBoxLayout()
         self.sprite_edit_mode = QCheckBox("启用编辑模式 (生成后可选择帧)")
         hdr.addWidget(self.sprite_edit_mode)
-        hdr.addStretch()
-        edit_existing_btn = QPushButton("编辑已有精灵图")
-        edit_existing_btn.clicked.connect(self._edit_existing_sprite)
-        hdr.addWidget(edit_existing_btn)
         el.addLayout(hdr)
         edit_hint = self.create_hint_label("启用后，生成精灵图前会打开编辑器，可以选择要保留的帧。输出文件会添加 _bj 后缀。")
         el.addWidget(edit_hint)
         edit_grp.setLayout(el)
         layout.addWidget(edit_grp)
-        
-        btn = QPushButton("生成精灵图")
-        btn.setObjectName("actionButton")
-        btn.clicked.connect(self.sprite_run)
-        layout.addWidget(btn)
         
         self.sprite_prog = QProgressBar()
         layout.addWidget(self.sprite_prog)
@@ -3898,6 +4116,7 @@ class MainWindow(QWidget):
         layout = QVBoxLayout()
         
         grp = QGroupBox("视频源")
+        grp.setFixedHeight(60)
         l, self.extract_path_edit = self.create_file_input(self.extract_select)
         l.setContentsMargins(6,6,6,6)
         l.setSpacing(6)
@@ -3905,6 +4124,7 @@ class MainWindow(QWidget):
         layout.addWidget(grp)
         
         model_grp = QGroupBox("AI 模型")
+        model_grp.setFixedHeight(60)  # 强制限制高度
         ml = QGridLayout()
         ml.setContentsMargins(6,6,6,6)
         ml.setHorizontalSpacing(6)
@@ -3920,6 +4140,7 @@ class MainWindow(QWidget):
         layout.addWidget(model_grp)
         
         opt = QGroupBox("提取选项")
+        opt.setFixedHeight(90)  # 3行文本高度
         ol = QGridLayout()
         self.extract_mode = QButtonGroup(w)
         r1 = QRadioButton("首尾帧")
@@ -3935,6 +4156,10 @@ class MainWindow(QWidget):
         self.extract_step.setValue(1)
         ol.addWidget(self.extract_step, 0, 3)
         
+        # 背景图路径控件移动到间隔控件后面
+        self.extract_bg_img = QLineEdit("背景图路径...")
+        ol.addWidget(self.extract_bg_img, 0, 4, 1, 2)
+
         self.extract_rembg = QCheckBox("移除背景")
         ol.addWidget(self.extract_rembg, 1, 0)
         self.extract_bg_type = QComboBox()
@@ -3946,13 +4171,11 @@ class MainWindow(QWidget):
         self.extract_bg_color = ColorPickerWidget("#FFFFFF")
         ol.addWidget(self.extract_bg_color, 1, 3)
         
-        self.extract_bg_img = QLineEdit("背景图路径...")
-        ol.addWidget(self.extract_bg_img, 2, 0, 1, 4)
-        
         opt.setLayout(ol)
         layout.addWidget(opt)
         
         clean_grp = QGroupBox("清理选项")
+        clean_grp.setFixedHeight(115)  # 增加5px (110 -> 115)
         cl = QGridLayout()
         
         self.extract_clean = QCheckBox("边缘清理")
@@ -4047,25 +4270,26 @@ class MainWindow(QWidget):
                 for w in [self.extract_feather, self.extract_blur, self.extract_gamma, self.extract_iso_area, self.extract_internal_area]:
                     w.setEnabled(True)
         self.extract_clean_preset.currentTextChanged.connect(_apply_extract_preset)
+        
+        def _on_extract_rembg_toggled(checked):
+            self.extract_clean_preset.setEnabled(checked)
+            self.extract_clean.setEnabled(checked)
+            self.extract_iso.setEnabled(checked)
+            self.extract_internal.setEnabled(checked)
+            
+            if not checked:
+                for w in [self.extract_feather, self.extract_blur, self.extract_gamma, self.extract_iso_area, self.extract_internal_area]:
+                    w.setEnabled(False)
+            else:
+                _apply_extract_preset(self.extract_clean_preset.currentText())
+                
+        self.extract_rembg.toggled.connect(_on_extract_rembg_toggled)
+        _on_extract_rembg_toggled(self.extract_rembg.isChecked())
         _apply_extract_preset(self.extract_clean_preset.currentText())
-        self.extract_rembg.stateChanged.connect(lambda s: [
-            self.extract_clean_preset.setEnabled(s),
-            self.extract_clean.setEnabled(s),
-            self.extract_iso.setEnabled(s),
-            self.extract_internal.setEnabled(s)
-        ])
-        self.extract_clean_preset.setEnabled(self.extract_rembg.isChecked())
-        self.extract_clean.setEnabled(self.extract_rembg.isChecked())
-        self.extract_iso.setEnabled(self.extract_rembg.isChecked())
-        self.extract_internal.setEnabled(self.extract_rembg.isChecked())
         
         clean_grp.setLayout(cl)
         layout.addWidget(clean_grp)
         
-        btn = QPushButton("开始提取")
-        btn.setObjectName("actionButton")
-        btn.clicked.connect(self.extract_run)
-        layout.addWidget(btn)
         self.extract_prog = QProgressBar()
         layout.addWidget(self.extract_prog)
         w.setLayout(layout)
@@ -4077,6 +4301,7 @@ class MainWindow(QWidget):
         layout = QVBoxLayout()
         
         src_grp = QGroupBox("视频源")
+        src_grp.setFixedHeight(60)
         l, self.beiou_path_edit = self.create_file_input(self.beiou_select)
         l.setContentsMargins(6,6,6,6)
         l.setSpacing(6)
@@ -4084,6 +4309,7 @@ class MainWindow(QWidget):
         layout.addWidget(src_grp)
         
         model_grp = QGroupBox("AI 模型")
+        model_grp.setFixedHeight(60)  # 强制限制高度
         ml = QGridLayout()
         ml.setContentsMargins(6,6,6,6)
         ml.setHorizontalSpacing(6)
@@ -4100,6 +4326,7 @@ class MainWindow(QWidget):
         layout.addWidget(model_grp)
         
         out_grp = QGroupBox("输出设置")
+        out_grp.setFixedHeight(150)  # 5行文本高度
         ol = QGridLayout()
         ol.setContentsMargins(8, 8, 8, 8)
         ol.setHorizontalSpacing(8)
@@ -4146,6 +4373,7 @@ class MainWindow(QWidget):
         layout.addWidget(out_grp)
         
         post_grp = QGroupBox("后处理选项")
+        post_grp.setFixedHeight(90)
         pl = QGridLayout()
         
         self.beiou_clean = QCheckBox("边缘清理")
@@ -4245,14 +4473,8 @@ class MainWindow(QWidget):
         post_grp.setLayout(pl)
         layout.addWidget(post_grp)
         
-        btn = QPushButton("开始视频扣像")
-        btn.setObjectName("actionButton")
-        btn.clicked.connect(self.beiou_run)
-        layout.addWidget(btn)
-        
         self.beiou_prog = QProgressBar()
         layout.addWidget(self.beiou_prog)
-        
         w.setLayout(layout)
         return w
 
@@ -4261,6 +4483,7 @@ class MainWindow(QWidget):
         layout = QVBoxLayout()
         
         grp = QGroupBox("图片源")
+        grp.setFixedHeight(60)
         l, self.vid_src_edit = self.create_file_input(self.vid_select)
         grp.setLayout(l)
         layout.addWidget(grp)
@@ -4285,10 +4508,6 @@ class MainWindow(QWidget):
         opt.setLayout(ol)
         layout.addWidget(opt)
         
-        btn = QPushButton("合成视频")
-        btn.setObjectName("actionButton")
-        btn.clicked.connect(self.vid_run)
-        layout.addWidget(btn)
         self.vid_prog = QProgressBar()
         layout.addWidget(self.vid_prog)
         layout.addStretch()
@@ -4300,6 +4519,7 @@ class MainWindow(QWidget):
         layout = QVBoxLayout()
         
         src_grp = QGroupBox("源")
+        src_grp.setFixedHeight(60)  # 2行文本高度
         self.gif_src_type = QButtonGroup(w)
         r1 = QRadioButton("视频")
         r1.setChecked(True)
@@ -4309,15 +4529,16 @@ class MainWindow(QWidget):
         hl = QHBoxLayout()
         hl.addWidget(r1)
         hl.addWidget(r2)
-        hl.addStretch()
-        src_grp.setLayout(QVBoxLayout())
-        src_grp.layout().addLayout(hl)
         
         l, self.gif_src_edit = self.create_file_input(self.gif_select)
-        src_grp.layout().addLayout(l)
+        hl.addLayout(l) # 将文件选择控件添加到同一行
+        
+        src_grp.setLayout(QVBoxLayout())
+        src_grp.layout().addLayout(hl)
         layout.addWidget(src_grp)
         
         model_grp = QGroupBox("AI 模型")
+        model_grp.setFixedHeight(60)  # 强制限制高度
         ml = QGridLayout()
         ml.setContentsMargins(6,6,6,6)
         ml.setHorizontalSpacing(6)
@@ -4333,9 +4554,10 @@ class MainWindow(QWidget):
         layout.addWidget(model_grp)
         
         opt = QGroupBox("GIF 参数")
+        opt.setFixedHeight(60)
         ol = QGridLayout()
         ol.setContentsMargins(6,6,6,6)
-        ol.setHorizontalSpacing(3)
+        ol.setHorizontalSpacing(1)  # 减少间距 (5px -> 1px)
         ol.setVerticalSpacing(2)
         fps_l = QLabel("FPS:")
         ol.addWidget(fps_l, 0, 0)
@@ -4347,14 +4569,15 @@ class MainWindow(QWidget):
         ol.addWidget(self.gif_step, 0, 3)
         
         self.gif_transparency = QCheckBox("保留透明通道")
-        ol.addWidget(self.gif_transparency, 1, 0, 1, 2)
+        ol.addWidget(self.gif_transparency, 0, 4)
         self.gif_rembg = QCheckBox("移除背景")
-        ol.addWidget(self.gif_rembg, 1, 2, 1, 2)
+        ol.addWidget(self.gif_rembg, 0, 5)
         
         opt.setLayout(ol)
         layout.addWidget(opt)
         
         clean_grp = QGroupBox("清理选项")
+        clean_grp.setFixedHeight(115)  # 增加5px (110 -> 115)
         cl = QGridLayout()
         
         self.gif_clean = QCheckBox("边缘清理")
@@ -4449,17 +4672,22 @@ class MainWindow(QWidget):
                 for w in [self.gif_feather, self.gif_blur, self.gif_gamma, self.gif_iso_area, self.gif_internal_area]:
                     w.setEnabled(True)
         self.gif_clean_preset.currentTextChanged.connect(_apply_gif_preset)
+        
+        def _on_gif_rembg_toggled(checked):
+            self.gif_clean_preset.setEnabled(checked)
+            self.gif_clean.setEnabled(checked)
+            self.gif_iso.setEnabled(checked)
+            self.gif_internal.setEnabled(checked)
+            
+            if not checked:
+                for w in [self.gif_feather, self.gif_blur, self.gif_gamma, self.gif_iso_area, self.gif_internal_area]:
+                    w.setEnabled(False)
+            else:
+                _apply_gif_preset(self.gif_clean_preset.currentText())
+
+        self.gif_rembg.toggled.connect(_on_gif_rembg_toggled)
+        _on_gif_rembg_toggled(self.gif_rembg.isChecked())
         _apply_gif_preset(self.gif_clean_preset.currentText())
-        self.gif_rembg.stateChanged.connect(lambda s: [
-            self.gif_clean_preset.setEnabled(s),
-            self.gif_clean.setEnabled(s),
-            self.gif_iso.setEnabled(s),
-            self.gif_internal.setEnabled(s)
-        ])
-        self.gif_clean_preset.setEnabled(self.gif_rembg.isChecked())
-        self.gif_clean.setEnabled(self.gif_rembg.isChecked())
-        self.gif_iso.setEnabled(self.gif_rembg.isChecked())
-        self.gif_internal.setEnabled(self.gif_rembg.isChecked())
         
         self.gif_bg_type = QComboBox()
         self.gif_bg_type.addItems(["none", "color"])
@@ -4470,15 +4698,11 @@ class MainWindow(QWidget):
         self.gif_bg_color = ColorPickerWidget("#FFFFFF")
         cl.addWidget(self.gif_bg_color, 2, 2, 1, 2)
         
-        self.gif_transparency.stateChanged.connect(lambda s: [self.gif_bg_type.setEnabled(not s), self.gif_bg_color.setEnabled(not s)])
+        self.gif_transparency.toggled.connect(lambda s: [self.gif_bg_type.setEnabled(not s), self.gif_bg_color.setEnabled(not s)])
 
         clean_grp.setLayout(cl)
         layout.addWidget(clean_grp)
         
-        btn = QPushButton("生成 GIF")
-        btn.setObjectName("actionButton")
-        btn.clicked.connect(self.gif_run)
-        layout.addWidget(btn)
         self.gif_prog = QProgressBar()
         layout.addWidget(self.gif_prog)
         w.setLayout(layout)
@@ -4489,11 +4713,13 @@ class MainWindow(QWidget):
         layout = QVBoxLayout()
         
         grp = QGroupBox("单图")
+        grp.setFixedHeight(60)
         l, self.single_src_edit = self.create_file_input(self.single_select)
         grp.setLayout(l)
         layout.addWidget(grp)
         
         model_grp = QGroupBox("AI 模型")
+        model_grp.setFixedHeight(60)  # 强制限制高度
         ml = QGridLayout()
         ml.setContentsMargins(6,6,6,6)
         ml.setHorizontalSpacing(6)
@@ -4616,10 +4842,57 @@ class MainWindow(QWidget):
         opt.setLayout(ol)
         layout.addWidget(opt)
         
-        btn = QPushButton("处理图片")
-        btn.setObjectName("actionButton")
-        btn.clicked.connect(self.single_run)
-        layout.addWidget(btn)
+        # ==================== ICO 生成 ====================
+        ico_grp = QGroupBox("ICO 生成 (可选)")
+        il = QGridLayout()
+        il.setContentsMargins(6,6,6,6)
+        
+        self.ico_enabled = QCheckBox("启用 ICO 生成")
+        il.addWidget(self.ico_enabled, 0, 0, 1, 6)
+        
+        self.ico_sizes = {}
+        # 16x16 ... 480x480
+        sizes = [16, 24, 32, 48, 64, 72, 80, 96, 128, 256, 320, 480]
+        row = 1
+        col = 0
+        for s in sizes:
+            cb = QCheckBox(f"{s}x{s}")
+            self.ico_sizes[s] = cb
+            il.addWidget(cb, row, col)
+            col += 1
+            if col >= 6:
+                col = 0
+                row += 1
+        
+        self.ico_transparent = QCheckBox("保留透明通道")
+        self.ico_transparent.setChecked(True)
+        il.addWidget(self.ico_transparent, row+1, 0, 1, 3)
+        
+        self.ico_opaque = QCheckBox("生成无透明版本(白底)")
+        il.addWidget(self.ico_opaque, row+1, 3, 1, 3)
+        
+        self.ico_png = QCheckBox("生成 PNG")
+        il.addWidget(self.ico_png, row+2, 0, 1, 3)
+        
+        def _toggle_ico(checked):
+            for w in self.ico_sizes.values():
+                w.setEnabled(checked)
+            self.ico_transparent.setEnabled(checked)
+            self.ico_opaque.setEnabled(checked)
+            self.ico_png.setEnabled(checked)
+            
+        self.ico_enabled.toggled.connect(_toggle_ico)
+        # 强制初始化状态
+        _toggle_ico(self.ico_enabled.isChecked())
+        # 确保初始未选中时是禁用的，选中时是启用的。
+        # 如果默认 self.ico_enabled 是未选中的，那么 checkState() 是 0 (Unchecked)，enabled 为 False。
+        # 如果默认是选中的，checkState() 是 2 (Checked)，enabled 为 True。
+        # 注意：Qt.Checked 枚举值通常为 2。
+        
+        ico_grp.setLayout(il)
+        layout.addWidget(ico_grp)
+        # ================================================
+        
         self.single_prog = QProgressBar()
         layout.addWidget(self.single_prog)
         layout.addStretch()
@@ -4648,43 +4921,59 @@ class MainWindow(QWidget):
         model_grp.setLayout(ml)
         layout.addWidget(model_grp)
         
+        # 硬件信息与输出路径并排布局
+        hw_paths_layout = QHBoxLayout()
+        
+        # 硬件信息 (减少 120px 宽度)
         hw_grp = QGroupBox("硬件信息")
+        hw_grp.setFixedHeight(220)  # 增加10px (210 -> 220)
+        hw_grp.setFixedWidth(200)   # 假设原宽约320，减120后设为200 (实际通过layout stretch控制，这里尝试固定宽度或调整stretch)
+        # 由于是 QHBoxLayout，更推荐调整 stretch。
+        # 原比例 3:7。要减少左边增加右边。
+        # 假设总宽1000，左300右700。减少120 -> 左180右820。
+        # 比例约为 1.8 : 8.2 -> 9 : 41。或者直接用固定宽度。
+        # 用户要求“硬件信息宽度减小120像素”，如果之前是自动拉伸，现在最好给硬件信息设置固定宽度或者最大宽度。
+        # 之前代码：hw_paths_layout.addWidget(hw_grp, 3) ... addWidget(pg, 7)
+        # 这里我们尝试调整 stretch 或者直接设置FixedWidth。
+        # 考虑到响应式，调整 stretch 可能不够精确，但更灵活。
+        # 不过用户说了具体像素，可能更希望是固定变化。
+        # 让我们尝试设置 hw_grp 的 MaximumWidth，并调整 stretch。
+        
         hl = QGridLayout()
         hl.setContentsMargins(6,6,6,6)
         hl.setHorizontalSpacing(8)
         hl.setVerticalSpacing(4)
-        # 第一行：GPU 与 显存
+        
+        # 一行显示一项内容
         hl.addWidget(QLabel("GPU:"), 0, 0)
         hl.addWidget(QLabel(f"{'✓ ' + HardwareInfo.gpu_name if HardwareInfo.gpu_available else '○ 未检测到'}"), 0, 1)
-        hl.addWidget(QLabel("GPU 显存:"), 0, 2)
-        hl.addWidget(QLabel(f"{HardwareInfo.gpu_memory_mb} MB" if HardwareInfo.gpu_available else "N/A"), 0, 3)
-        # 第二行：CPU 与 内存
-        hl.addWidget(QLabel("CPU 线程:"), 1, 0)
-        hl.addWidget(QLabel(str(HardwareInfo.cpu_threads)), 1, 1)
-        hl.addWidget(QLabel("可用内存:"), 1, 2)
-        hl.addWidget(QLabel(f"{HardwareInfo.available_memory_mb} MB"), 1, 3)
-        # 第三行：rembg
-        hl.addWidget(QLabel("rembg:"), 2, 0)
-        hl.addWidget(QLabel(f"{'✓ 已安装' if USE_REMBG else '✗ 未安装'}"), 2, 1)
-        # 第四行：ONNX 提供程序（独占一行）
-        hl.addWidget(QLabel("ONNX 提供程序:"), 3, 0)
-        val = QLabel(", ".join(HardwareInfo.onnx_providers) if HardwareInfo.onnx_providers else "N/A")
-        hl.addWidget(val, 3, 1, 1, 3)
+        
+        hl.addWidget(QLabel("GPU 显存:"), 1, 0)
+        hl.addWidget(QLabel(f"{HardwareInfo.gpu_memory_mb} MB" if HardwareInfo.gpu_available else "N/A"), 1, 1)
+        
+        hl.addWidget(QLabel("CPU 线程:"), 2, 0)
+        hl.addWidget(QLabel(str(HardwareInfo.cpu_threads)), 2, 1)
+        
+        hl.addWidget(QLabel("可用内存:"), 3, 0)
+        hl.addWidget(QLabel(f"{HardwareInfo.available_memory_mb} MB"), 3, 1)
+        
+        hl.addWidget(QLabel("rembg:"), 4, 0)
+        hl.addWidget(QLabel(f"{'✓ 已安装' if USE_REMBG else '✗ 未安装'}"), 4, 1)
+        
+        hl.addWidget(QLabel("ONNX:"), 5, 0)
+        # ONNX 内容分两行显示
+        onnx_text = ", ".join(HardwareInfo.onnx_providers) if HardwareInfo.onnx_providers else "N/A"
+        # 简单的换行处理，例如每25个字符换行，或者直接设置 WordWrap
+        onnx_label = QLabel(onnx_text)
+        onnx_label.setWordWrap(True)
+        hl.addWidget(onnx_label, 5, 1, 2, 1) # 占两行高度
+        
         hw_grp.setLayout(hl)
-        layout.addWidget(hw_grp)
+        hw_paths_layout.addWidget(hw_grp) # 不再设置stretch，使用FixedWidth
         
-        act = QGroupBox("激活信息")
-        al = QVBoxLayout()
-        al.addWidget(QLabel(f"机器码: {LicenseManager.get_machine_code()}"))
-        al.addWidget(QLabel(f"激活文件: {LicenseManager.get_license_file()}"))
-        if not self.activated:
-            btn = QPushButton("输入激活码")
-            btn.clicked.connect(self._show_activation_dialog)
-            al.addWidget(btn)
-        act.setLayout(al)
-        layout.addWidget(act)
-        
+        # 输出路径 (增加 120px 宽度)
         pg = QGroupBox("输出路径 (biemo 目录)")
+        pg.setFixedHeight(220)  # 增加10px (210 -> 220)
         pgl = QGridLayout()
         self.path_edits = {}
         output_paths = ConfigManager.get("output_paths", ConfigManager.DEFAULT_CONFIG["output_paths"])
@@ -4700,11 +4989,32 @@ class MainWindow(QWidget):
             pgl.addWidget(btn, i, 2)
         
         pg.setLayout(pgl)
-        layout.addWidget(pg)
+        hw_paths_layout.addWidget(pg) # 剩余空间自动给输出路径
+        
+        layout.addLayout(hw_paths_layout)
+        
+        act = QGroupBox("激活信息")
+        act.setFixedHeight(80)  # 增加10px (70 -> 80)
+        al = QVBoxLayout()
+        al.setContentsMargins(6,6,6,6)
+        
+        row1 = QHBoxLayout()
+        row1.addWidget(QLabel(f"机器码: {LicenseManager.get_machine_code()}"))
+        if not self.activated:
+            btn = QPushButton("输入激活码")
+            btn.clicked.connect(self._show_activation_dialog)
+            row1.addWidget(btn)
+        row1.addStretch()
+        al.addLayout(row1)
+        
+        al.addWidget(QLabel(f"激活文件: {LicenseManager.get_license_file()}"))
+        
+        act.setLayout(al)
+        layout.addWidget(act)
         
         s_box = QCheckBox("开启完成音效")
         s_box.setChecked(self.enable_sound)
-        s_box.stateChanged.connect(lambda s: [setattr(self, 'enable_sound', s), ConfigManager.set("enable_sound", s)])
+        s_box.toggled.connect(lambda s: [setattr(self, 'enable_sound', s), ConfigManager.set("enable_sound", s)])
         layout.addWidget(s_box)
         
         layout.addStretch()
@@ -4798,7 +5108,7 @@ class MainWindow(QWidget):
         msg.setIcon(QMessageBox.Information)
         open_btn = msg.addButton("打开文件夹", QMessageBox.ActionRole)
         msg.addButton("关闭", QMessageBox.RejectRole)
-        msg.exec_()
+        msg.exec()
         if msg.clickedButton() == open_btn and folder_path:
             try:
                 os.startfile(folder_path)
@@ -4911,7 +5221,7 @@ class MainWindow(QWidget):
                 if idxs:
                     frames = [frames[i] for i in idxs]
             dlg = SpritePreviewDialog(frames, fps=12, parent=self)
-            dlg.exec_()
+            dlg.exec()
         except Exception:
             pass
 
@@ -4928,7 +5238,7 @@ class MainWindow(QWidget):
             return
         try:
             dialog = SpriteEditorDialog(self, source_sprite_path=file_path)
-            if dialog.exec_() == QDialog.Accepted:
+            if dialog.exec() == QDialog.Accepted:
                 selected_frames = dialog.get_selected_frames()
                 output_cols = dialog.get_output_cols()
                 if not selected_frames:
@@ -5142,7 +5452,12 @@ class MainWindow(QWidget):
             "remove_internal": self.single_internal.isChecked(),
             "internal_max_area": self.single_internal_area.value(),
             "bg_type": self.single_bg_type.currentText(),
-            "bg_color": self.single_bg_color.get_color()  # 【修复】使用颜色选择器
+            "bg_color": self.single_bg_color.get_color(),  # 【修复】使用颜色选择器
+            "ico_enabled": self.ico_enabled.isChecked(),
+            "ico_sizes": [s for s, cb in self.ico_sizes.items() if cb.isChecked()],
+            "ico_transparent": self.ico_transparent.isChecked(),
+            "ico_opaque": self.ico_opaque.isChecked(),
+            "ico_png": self.ico_png.isChecked()
         }
         
         logger.info(f"开始处理图片: {path}")
@@ -5164,4 +5479,4 @@ if __name__ == "__main__":
     
     w = MainWindow()
     w.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())
