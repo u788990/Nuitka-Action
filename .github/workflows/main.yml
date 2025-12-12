@@ -21,13 +21,12 @@ jobs:
   build:
     name: 🚀 Build on Windows
     runs-on: windows-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
 
     steps:
       - name: Check-out repository
         uses: actions/checkout@v4
 
-      # === 1. 虚拟内存配置 ===
       - name: Configure Pagefile
         uses: al-cheb/configure-pagefile-action@v1.4
         with:
@@ -39,99 +38,71 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          architecture: 'x64'
           cache: 'pip'
           cache-dependency-path: 'requirements.txt'
 
-      - name: 🛡️ 环境自检与修复
+      - name: Install Dependencies
         shell: pwsh
         run: |
-          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-          $env:PYTHONIOENCODING = "utf-8"
+          Write-Host "=== Upgrading pip ===" -ForegroundColor Cyan
+          python -m pip install --upgrade pip
           
-          Write-Host "==============================" -ForegroundColor Cyan
-          Write-Host "Environment Setup" -ForegroundColor Cyan
-          Write-Host "==============================" -ForegroundColor Cyan
+          Write-Host "=== Installing build tools ===" -ForegroundColor Cyan
+          python -m pip install wheel nuitka zstandard pillow ordered-set
           
-          # 创建 assets 目录
-          if (-not (Test-Path "assets")) {
-              Write-Host "[WARN] Creating empty assets directory..."
-              New-Item -ItemType Directory -Path "assets" -Force | Out-Null
-              New-Item -ItemType File -Path "assets/.keep" -Force | Out-Null
-          }
+          Write-Host "=== Installing CPU Torch ===" -ForegroundColor Cyan
+          python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
           
-          # 升级 pip
-          Write-Host "[INFO] Upgrading pip..."
-          python -m pip install --upgrade pip -q
-          
-          # 安装基础工具
-          Write-Host "[INFO] Installing build tools..."
-          python -m pip install wheel nuitka zstandard pillow -q
-          
-          # 安装 Torch CPU 版本
-          Write-Host "[INFO] Installing CPU Torch..."
-          python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu -q
-          
-          # 解析并安装 requirements.txt
+          Write-Host "=== Installing project dependencies ===" -ForegroundColor Cyan
           if (Test-Path "requirements.txt") {
-              Write-Host "[INFO] Parsing requirements.txt..."
-              $content = Get-Content "requirements.txt" -Encoding UTF8
-              $validDeps = @()
-              $skipKeywords = @("torch", "pyside6", "pyqt6", "numba")
+              $content = Get-Content "requirements.txt" -Raw
+              $lines = $content -split "`n"
+              $skipKeywords = @("torch", "pyside6", "pyqt6", "numba", "cuda")
               
-              foreach ($line in $content) {
+              foreach ($line in $lines) {
                   $line = $line.Trim()
                   if ([string]::IsNullOrEmpty($line) -or $line.StartsWith("#")) { continue }
                   
                   $skip = $false
                   foreach ($kw in $skipKeywords) {
-                      if ($line.ToLower().Contains($kw)) { $skip = $true; break }
+                      if ($line.ToLower().Contains($kw)) { 
+                          Write-Host "Skipping: $line" -ForegroundColor Yellow
+                          $skip = $true
+                          break 
+                      }
                   }
-                  if (-not $skip) { $validDeps += $line }
-              }
-              
-              if ($validDeps.Count -gt 0) {
-                  Write-Host "[INFO] Installing $($validDeps.Count) dependencies..."
-                  foreach ($dep in $validDeps) {
-                      try {
-                          python -m pip install $dep -q 2>$null
-                      } catch {
-                          Write-Host "[WARN] Skipped: $dep"
+                  
+                  if (-not $skip) {
+                      Write-Host "Installing: $line"
+                      python -m pip install $line 2>&1 | Out-Null
+                      if ($LASTEXITCODE -ne 0) {
+                          Write-Host "Warning: Failed to install $line" -ForegroundColor Yellow
                       }
                   }
               }
           } else {
-              Write-Host "[WARN] No requirements.txt, installing defaults..."
-              python -m pip install pygame numpy pandas opencv-python PyQt5 -q
+              Write-Host "No requirements.txt found, installing defaults..." -ForegroundColor Yellow
+              python -m pip install pygame numpy pandas opencv-python PyQt5
+          }
+
+      - name: Prepare Assets and Icon
+        shell: pwsh
+        run: |
+          Write-Host "=== Checking assets directory ===" -ForegroundColor Cyan
+          if (-not (Test-Path "assets")) {
+              New-Item -ItemType Directory -Path "assets" -Force | Out-Null
+              New-Item -ItemType File -Path "assets/.keep" -Force | Out-Null
+              Write-Host "Created empty assets directory"
           }
           
-          # 图标生成
-          Write-Host "[INFO] Checking icon..."
+          Write-Host "=== Checking icon ===" -ForegroundColor Cyan
           if (-not (Test-Path "icon.ico")) {
-              Write-Host "[WARN] Generating default icon..."
-              python -c @"
-          from PIL import Image, ImageDraw
-          img = Image.new('RGB', (256, 256), color=(0, 120, 215))
-          d = ImageDraw.Draw(img)
-          d.text((100, 110), 'APP', fill=(255, 255, 255))
-          img.save('icon.ico', format='ICO')
-          "@
-              Write-Host "[INFO] Default icon created."
+              Write-Host "Generating default icon..."
+              python -c "from PIL import Image, ImageDraw; img = Image.new('RGB', (256, 256), color=(0, 120, 215)); d = ImageDraw.Draw(img); d.text((100, 110), 'APP', fill=(255, 255, 255)); img.save('icon.ico', format='ICO')"
+              Write-Host "Default icon created"
           }
-          
-          Write-Host "[INFO] Environment setup completed."
 
-      # === 2. Nuitka 缓存配置 ===
-      - name: Setup Nuitka Cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ github.workspace }}/nuitka_cache
-            ~\AppData\Local\Nuitka
-          key: nuitka-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            nuitka-${{ runner.os }}-
-
-      # === 3. Nuitka 编译 ===
       - name: Build with Nuitka
         uses: Nuitka/Nuitka-Action@main
         with:
@@ -151,10 +122,16 @@ jobs:
             setuptools
             distutils
             doctest
+            numba
+            numba.cuda
+            numba.tests
           
           enable-plugins: pyqt5
           
           noinclude-numba-mode: nofollow
+          noinclude-pytest-mode: nofollow
+          noinclude-setuptools-mode: nofollow
+          noinclude-unittest-mode: nofollow
           
           module-parameter: torch-disable-jit=yes
           
@@ -172,14 +149,15 @@ jobs:
           
           low-memory: true
           
-          company-name: "Your Company"
-          product-name: "Your Product"
-          file-version: "1.0.0.0"
-          product-version: "1.0.0.0"
-          file-description: "Python Application"
+          jobs: 2
+          
+          company-name: Your Company
+          product-name: Your Product
+          file-version: 1.0.0.0
+          product-version: 1.0.0.0
+          file-description: Python Application
 
-      # === 4. 上传构建产物 ===
-      - name: 📦 Upload Artifacts
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Windows-Build-${{ inputs.build_mode }}
@@ -189,21 +167,18 @@ jobs:
           retention-days: 30
           include-hidden-files: true
 
-      # === 5. 构建信息输出 ===
-      - name: 📊 Build Summary
+      - name: Build Summary
         if: always()
         shell: pwsh
         run: |
-          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-          
           Write-Host ""
           Write-Host "==================================================" -ForegroundColor Cyan
           Write-Host "Build Summary" -ForegroundColor Cyan
           Write-Host "==================================================" -ForegroundColor Cyan
           
           if (Test-Path "build") {
-              $exeFiles = Get-ChildItem -Path "build" -Filter "*.exe" -Recurse
-              if ($exeFiles.Count -gt 0) {
+              $exeFiles = Get-ChildItem -Path "build" -Filter "*.exe" -Recurse -ErrorAction SilentlyContinue
+              if ($exeFiles -and $exeFiles.Count -gt 0) {
                   Write-Host ""
                   Write-Host "[SUCCESS] Generated $($exeFiles.Count) executable(s):" -ForegroundColor Green
                   foreach ($f in $exeFiles) {
@@ -215,14 +190,16 @@ jobs:
                   Write-Host "[WARN] No .exe files found" -ForegroundColor Yellow
               }
               
-              $distDirs = Get-ChildItem -Path "build" -Filter "*.dist" -Directory
-              if ($distDirs.Count -gt 0) {
+              $distDirs = Get-ChildItem -Path "build" -Filter "*.dist" -Directory -ErrorAction SilentlyContinue
+              if ($distDirs -and $distDirs.Count -gt 0) {
                   Write-Host ""
                   Write-Host "[INFO] Distribution folders:" -ForegroundColor Cyan
                   foreach ($d in $distDirs) {
-                      $totalSize = (Get-ChildItem -Path $d.FullName -Recurse -File | Measure-Object -Property Length -Sum).Sum
-                      $totalSizeMB = [math]::Round($totalSize / 1MB, 2)
-                      Write-Host "  - $($d.Name) ($totalSizeMB MB total)"
+                      $totalSize = (Get-ChildItem -Path $d.FullName -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
+                      if ($totalSize) {
+                          $totalSizeMB = [math]::Round($totalSize / 1MB, 2)
+                          Write-Host "  - $($d.Name) ($totalSizeMB MB total)"
+                      }
                   }
               }
           } else {
