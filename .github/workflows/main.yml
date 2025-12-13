@@ -1,4 +1,4 @@
-name: ☁️ 云端 Nuitka 极速打包 (v5.1 修复版)
+name: ☁️ 云端 Nuitka 极速打包 (v5.2 修复版)
 
 on:
   workflow_dispatch:
@@ -106,6 +106,9 @@ jobs:
           python -c "import PySide6; print('PySide6 OK')"
           python -c "import cv2; print('opencv OK')"
           python -c "import imageio; print('imageio OK')"
+          
+          Write-Host "=== Checking rembg module structure ===" -ForegroundColor Cyan
+          python -c "import rembg; import pkgutil; print('rembg submodules:', [name for importer, name, ispkg in pkgutil.walk_packages(rembg.__path__, rembg.__name__ + '.')])"
 
       - name: Create Icon Script
         shell: pwsh
@@ -214,8 +217,15 @@ jobs:
               Copy-Item -Path "app_icon.ico" -Destination "assets/" -Force
           }
           
+          # 创建 biemo 目录并添加占位文件，避免空目录警告
           New-Item -ItemType Directory -Path "biemo/models" -Force | Out-Null
           New-Item -ItemType Directory -Path "biemo/tools" -Force | Out-Null
+          # 添加占位文件
+          Set-Content -Path "biemo/models/.gitkeep" -Value ""
+          Set-Content -Path "biemo/tools/.gitkeep" -Value ""
+          Set-Content -Path "biemo/README.txt" -Value "This directory stores models and configuration files."
+          
+          Write-Host "Assets prepared successfully" -ForegroundColor Green
 
       - name: Build with Nuitka
         uses: Nuitka/Nuitka-Action@main
@@ -224,28 +234,17 @@ jobs:
           script-name: ${{ inputs.script_name }}
           mode: ${{ inputs.build_mode }}
           
-          include-module: |
+          # 只包含确实存在的顶级模块，让 Nuitka 自动处理子模块
+          include-package: |
             rembg
-            rembg.sessions
-            rembg.sessions.u2net
-            rembg.sessions.isnet
-            rembg.sessions.base
             onnxruntime
-            onnxruntime.capi
-            onnxruntime.capi.onnxruntime_pybind11_state
             imageio
-            imageio.core
-            imageio.plugins
             cv2
             numpy
             PIL
             psutil
           
-          include-package: |
-            rembg
-            onnxruntime
-            imageio
-          
+          # 包含包数据文件
           include-package-data: |
             rembg
             onnxruntime
