@@ -100,95 +100,101 @@ jobs:
           
           # Python 脚本：合并多尺寸图标
           $pythonScript = @"
-          from PIL import Image
-          import os
-          import sys
-          
-          icon_base = "$iconBaseName"
-          sizes = [16, 24, 32, 48, 64, 96, 128, 256]
-          images = []
-          
-          # 尝试查找图标文件
-          found_any = False
-          for size in sizes:
-              # 支持多种命名格式
-              patterns = [
-                  f"{icon_base}_{size}x{size}.ico",
-                  f"{icon_base}_{size}x{size}.png",
-                  f"{icon_base}-{size}x{size}.ico",
-                  f"{icon_base}-{size}x{size}.png",
-                  f"{size}x{size}.ico",
-                  f"{size}x{size}.png",
-                  f"{icon_base}{size}.ico",
-                  f"{icon_base}{size}.png",
-              ]
-              
-              img_found = None
-              for pattern in patterns:
-                  if os.path.exists(pattern):
-                      print(f"Found: {pattern}")
-                      try:
-                          img = Image.open(pattern)
-                          # 转换为 RGBA
-                          if img.mode != 'RGBA':
-                              img = img.convert('RGBA')
-                          # 确保尺寸正确
-                          if img.size != (size, size):
-                              img = img.resize((size, size), Image.LANCZOS)
-                          img_found = img
-                          found_any = True
-                          break
-                      except Exception as e:
-                          print(f"Error loading {pattern}: {e}")
-              
-              if img_found:
-                  images.append(img_found)
-          
-          # 如果没找到任何图标，创建默认图标
-          if not found_any:
-              print("No icon files found, creating default icons...")
-              from PIL import ImageDraw, ImageFont
-              for size in sizes:
-                  img = Image.new('RGBA', (size, size), (0, 120, 215, 255))
-                  draw = ImageDraw.Draw(img)
-                  # 画一个简单的图案
-                  margin = max(1, size // 8)
-                  draw.rectangle([margin, margin, size-margin-1, size-margin-1], 
-                               outline=(255, 255, 255, 255), width=max(1, size//16))
-                  images.append(img)
-              found_any = True
-          
-          if images:
-              # 保存为多尺寸 ICO
-              # 256x256 应该放在最前面作为主图标
-              images_sorted = sorted(images, key=lambda x: x.size[0], reverse=True)
-              
-              # 保存 ICO 文件
-              images_sorted[0].save(
-                  'app_icon.ico',
-                  format='ICO',
-                  sizes=[(img.size[0], img.size[1]) for img in images_sorted],
-                  append_images=images_sorted[1:] if len(images_sorted) > 1 else []
-              )
-              print(f"Created app_icon.ico with {len(images)} sizes")
-              
-              # 同时保存各个尺寸的 PNG 用于运行时
-              os.makedirs('icons', exist_ok=True)
-              for img in images:
-                  size = img.size[0]
-                  img.save(f'icons/icon_{size}.png', format='PNG')
-              print(f"Created PNG icons in icons/ folder")
-          else:
-              print("ERROR: No images to save!")
-              sys.exit(1)
-          "@
+from PIL import Image
+import os
+import sys
+
+icon_base = "$iconBaseName"
+sizes = [16, 24, 32, 48, 64, 96, 128, 256]
+images = []
+
+# 尝试查找图标文件
+found_any = False
+for size in sizes:
+    # 支持多种命名格式
+    patterns = [
+        f"{icon_base}_{size}x{size}.ico",
+        f"{icon_base}_{size}x{size}.png",
+        f"{icon_base}-{size}x{size}.ico",
+        f"{icon_base}-{size}x{size}.png",
+        f"{size}x{size}.ico",
+        f"{size}x{size}.png",
+        f"{icon_base}{size}.ico",
+        f"{icon_base}{size}.png",
+    ]
+    
+    img_found = None
+    for pattern in patterns:
+        if os.path.exists(pattern):
+            print(f"Found: {pattern}")
+            try:
+                img = Image.open(pattern)
+                # 转换为 RGBA
+                if img.mode != 'RGBA':
+                    img = img.convert('RGBA')
+                # 确保尺寸正确
+                if img.size != (size, size):
+                    img = img.resize((size, size), Image.LANCZOS)
+                img_found = img
+                found_any = True
+                break
+            except Exception as e:
+                print(f"Error loading {pattern}: {e}")
+    
+    if img_found:
+        images.append(img_found)
+
+# 如果没找到任何图标，创建默认图标
+if not found_any:
+    print("No icon files found, creating default icons...")
+    from PIL import ImageDraw, ImageFont
+    for size in sizes:
+        img = Image.new('RGBA', (size, size), (0, 120, 215, 255))
+        draw = ImageDraw.Draw(img)
+        # 画一个简单的图案
+        margin = max(1, size // 8)
+        draw.rectangle([margin, margin, size-margin-1, size-margin-1], 
+                     outline=(255, 255, 255, 255), width=max(1, size//16))
+        images.append(img)
+    found_any = True
+
+if images:
+    # 保存为多尺寸 ICO
+    # 256x256 应该放在最前面作为主图标
+    images_sorted = sorted(images, key=lambda x: x.size[0], reverse=True)
+    
+    # 保存 ICO 文件
+    images_sorted[0].save(
+        'app_icon.ico',
+        format='ICO',
+        sizes=[(img.size[0], img.size[1]) for img in images_sorted],
+        append_images=images_sorted[1:] if len(images_sorted) > 1 else []
+    )
+    print(f"Created app_icon.ico with {len(images)} sizes")
+    
+    # 同时保存各个尺寸的 PNG 用于运行时
+    os.makedirs('icons', exist_ok=True)
+    for img in images:
+        size = img.size[0]
+        img.save(f'icons/icon_{size}.png', format='PNG')
+    print(f"Created PNG icons in icons/ folder")
+else:
+    print("ERROR: No images to save!")
+    sys.exit(1)
+"@
           
           $pythonScript | python
           
           if (Test-Path "app_icon.ico") {
               Write-Host "Multi-size icon created successfully!" -ForegroundColor Green
-              # 显示图标信息
-              python -c "from PIL import Image; ico = Image.open('app_icon.ico'); print(f'ICO sizes: {ico.info.get(\"sizes\", [ico.size])}')"
+              # 显示图标信息（修复后的验证脚本）
+              $verifyScript = @"
+from PIL import Image
+ico = Image.open('app_icon.ico')
+sizes = ico.info.get('sizes', [ico.size])
+print(f'ICO sizes: {sizes}')
+"@
+              $verifyScript | python
           } else {
               Write-Host "Failed to create icon!" -ForegroundColor Red
               exit 1
@@ -259,7 +265,7 @@ jobs:
           include-data-dir: assets=assets
           include-data-files: app_icon.ico=app_icon.ico
           
-          # 关键：使用合并后的多尺寸图标
+          # 使用合并后的多尺寸图标
           windows-icon-from-ico: app_icon.ico
           
           windows-console-mode: disable
