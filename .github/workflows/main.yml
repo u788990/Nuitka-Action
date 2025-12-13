@@ -1,4 +1,4 @@
-name: ☁️ 云端 Nuitka 极速打包 (v5.2 修复版)
+name: ☁️ 云端 Nuitka 极速打包 (v5.4 rembg修复版)
 
 on:
   workflow_dispatch:
@@ -17,10 +17,10 @@ on:
           - standalone
           - onefile
       
-      icon_base_name:
-        description: '图标文件基础名称（不含尺寸后缀）'
+      icon_file:
+        description: 'ICO 图标文件名'
         required: true
-        default: 'icon'
+        default: 'exe.ico'
 
 jobs:
   build:
@@ -62,20 +62,20 @@ jobs:
           Write-Host "=== Installing PySide6 ===" -ForegroundColor Cyan
           python -m pip install PySide6
           
-          Write-Host "=== Installing rembg and onnxruntime ===" -ForegroundColor Cyan
-          python -m pip install rembg onnxruntime
+          Write-Host "=== Installing rembg with all dependencies ===" -ForegroundColor Cyan
+          python -m pip install rembg[cli] onnxruntime pooch
           
           Write-Host "=== Installing imageio ===" -ForegroundColor Cyan
           python -m pip install imageio imageio-ffmpeg
           
           Write-Host "=== Installing other dependencies ===" -ForegroundColor Cyan
-          python -m pip install opencv-python numpy psutil
+          python -m pip install opencv-python numpy psutil scikit-image scipy
           
           Write-Host "=== Installing project dependencies ===" -ForegroundColor Cyan
           if (Test-Path "requirements.txt") {
               $content = Get-Content "requirements.txt" -Raw
               $lines = $content -split "`n"
-              $skipKeywords = @("torch", "pyside6", "pyqt6", "numba", "cuda", "rembg", "onnxruntime", "imageio", "opencv", "numpy", "psutil")
+              $skipKeywords = @("torch", "pyside6", "pyqt6", "numba", "cuda", "rembg", "onnxruntime", "imageio", "opencv", "numpy", "psutil", "scikit", "scipy", "pooch")
               
               foreach ($line in $lines) {
                   $line = $line.Trim()
@@ -93,110 +93,28 @@ jobs:
                   if (-not $skip) {
                       Write-Host "Installing: $line"
                       python -m pip install $line 2>&1 | Out-Null
-                      if ($LASTEXITCODE -ne 0) {
-                          Write-Host "Warning: Failed to install $line" -ForegroundColor Yellow
-                      }
                   }
               }
           }
           
-          Write-Host "=== Verifying installations ===" -ForegroundColor Cyan
-          python -c "import rembg; print('rembg OK')"
-          python -c "import onnxruntime; print('onnxruntime OK')"
-          python -c "import PySide6; print('PySide6 OK')"
-          python -c "import cv2; print('opencv OK')"
-          python -c "import imageio; print('imageio OK')"
-          
-          Write-Host "=== Checking rembg module structure ===" -ForegroundColor Cyan
-          python -c "import rembg; import pkgutil; print('rembg submodules:', [name for importer, name, ispkg in pkgutil.walk_packages(rembg.__path__, rembg.__name__ + '.')])"
+          Write-Host "=== Verifying rembg installation ===" -ForegroundColor Cyan
+          python -c "import rembg; print('rembg path:', rembg.__file__)"
+          python -c "from rembg import remove, new_session; print('rembg functions OK')"
+          python -c "import onnxruntime; print('onnxruntime providers:', onnxruntime.get_available_providers())"
 
-      - name: Create Icon Script
+      - name: Verify Icon File
         shell: pwsh
         run: |
-          Set-Content -Path "create_icon.py" -Value @"
-          from PIL import Image
-          import os
-          import sys
-
-          icon_base = sys.argv[1] if len(sys.argv) > 1 else "icon"
-          required_sizes = [16, 32, 48, 256]
-          optional_sizes = [24, 64, 96, 128]
-          all_sizes = sorted(set(required_sizes + optional_sizes))
+          Write-Host "=== Checking icon file ===" -ForegroundColor Cyan
+          $iconFile = "${{ inputs.icon_file }}"
           
-          images = []
-          source_image = None
-
-          for size in sorted(all_sizes, reverse=True):
-              patterns = [
-                  f"{icon_base}_{size}x{size}.png",
-                  f"{icon_base}_{size}x{size}.ico",
-                  f"{icon_base}-{size}x{size}.png",
-                  f"{icon_base}{size}.png",
-              ]
-              for pattern in patterns:
-                  if os.path.exists(pattern):
-                      try:
-                          source_image = Image.open(pattern)
-                          if source_image.mode != "RGBA":
-                              source_image = source_image.convert("RGBA")
-                          print(f"Found source: {pattern} ({source_image.size})")
-                          break
-                      except Exception as e:
-                          print(f"Error loading {pattern}: {e}")
-              if source_image:
-                  break
-
-          if not source_image:
-              for ext in ['.png', '.ico', '.jpg', '.jpeg', '.bmp']:
-                  base_file = f"{icon_base}{ext}"
-                  if os.path.exists(base_file):
-                      try:
-                          source_image = Image.open(base_file)
-                          if source_image.mode != "RGBA":
-                              source_image = source_image.convert("RGBA")
-                          print(f"Found base source: {base_file} ({source_image.size})")
-                          break
-                      except Exception as e:
-                          print(f"Error loading {base_file}: {e}")
-
-          if not source_image:
-              print("No icon files found, creating default icon...")
-              from PIL import ImageDraw
-              source_image = Image.new("RGBA", (256, 256), (0, 120, 215, 255))
-              draw = ImageDraw.Draw(source_image)
-              draw.rectangle([20, 20, 235, 235], outline=(255, 255, 255, 255), width=8)
-
-          for size in all_sizes:
-              img = source_image.resize((size, size), Image.LANCZOS)
-              images.append(img)
-              print(f"Generated {size}x{size}")
-
-          images_sorted = sorted(images, key=lambda x: x.size[0], reverse=True)
-          images_sorted[0].save(
-              "app_icon.ico",
-              format="ICO",
-              sizes=[(img.size[0], img.size[1]) for img in images_sorted],
-              append_images=images_sorted[1:]
-          )
-          print(f"Created app_icon.ico with {len(images_sorted)} sizes")
-
-          os.makedirs("icons", exist_ok=True)
-          for img in images:
-              size = img.size[0]
-              img.save(f"icons/icon_{size}.png", format="PNG")
-          print("Created PNG icons in icons/ folder")
-          "@
-
-      - name: Prepare Multi-Size Icon
-        shell: pwsh
-        run: |
-          Write-Host "=== Creating Multi-Size ICO ===" -ForegroundColor Cyan
-          python create_icon.py "${{ inputs.icon_base_name }}"
-          
-          if (Test-Path "app_icon.ico") {
-              Write-Host "Multi-size icon created successfully!" -ForegroundColor Green
+          if (Test-Path $iconFile) {
+              $fileSize = (Get-Item $iconFile).Length
+              Write-Host "Icon file found: $iconFile ($fileSize bytes)" -ForegroundColor Green
           } else {
-              Write-Host "Failed to create icon!" -ForegroundColor Red
+              Write-Host "ERROR: Icon file '$iconFile' not found!" -ForegroundColor Red
+              Write-Host "Available .ico files:" -ForegroundColor Yellow
+              Get-ChildItem -Filter "*.ico" | ForEach-Object { Write-Host "  - $($_.Name)" }
               exit 1
           }
 
@@ -209,21 +127,17 @@ jobs:
               New-Item -ItemType Directory -Path "assets" -Force | Out-Null
           }
           
-          if (Test-Path "icons") {
-              Copy-Item -Path "icons/*" -Destination "assets/" -Force
+          $iconFile = "${{ inputs.icon_file }}"
+          if (Test-Path $iconFile) {
+              Copy-Item -Path $iconFile -Destination "assets/" -Force
+              Write-Host "Copied $iconFile to assets/" -ForegroundColor Green
           }
           
-          if (Test-Path "app_icon.ico") {
-              Copy-Item -Path "app_icon.ico" -Destination "assets/" -Force
-          }
-          
-          # 创建 biemo 目录并添加占位文件，避免空目录警告
           New-Item -ItemType Directory -Path "biemo/models" -Force | Out-Null
           New-Item -ItemType Directory -Path "biemo/tools" -Force | Out-Null
-          # 添加占位文件
           Set-Content -Path "biemo/models/.gitkeep" -Value ""
           Set-Content -Path "biemo/tools/.gitkeep" -Value ""
-          Set-Content -Path "biemo/README.txt" -Value "This directory stores models and configuration files."
+          Set-Content -Path "biemo/README.txt" -Value "Models and tools directory"
           
           Write-Host "Assets prepared successfully" -ForegroundColor Green
 
@@ -234,7 +148,7 @@ jobs:
           script-name: ${{ inputs.script_name }}
           mode: ${{ inputs.build_mode }}
           
-          # 只包含确实存在的顶级模块，让 Nuitka 自动处理子模块
+          # 包含完整的包（让 Nuitka 自动处理子模块）
           include-package: |
             rembg
             onnxruntime
@@ -243,20 +157,23 @@ jobs:
             numpy
             PIL
             psutil
+            pooch
+            scipy
+            skimage
           
-          # 包含包数据文件
+          # 包含包数据文件（模型文件等）
           include-package-data: |
             rembg
             onnxruntime
-            imageio
+            pooch
           
+          # 排除不需要的模块
           nofollow-import-to: |
             sympy
             tkinter
             unittest
             test
             tests
-            scipy.linalg
             matplotlib.tests
             pytest
             setuptools
@@ -264,7 +181,6 @@ jobs:
             doctest
             numba
             numba.cuda
-            numba.tests
           
           enable-plugins: pyside6
           
@@ -279,9 +195,9 @@ jobs:
             assets=assets
             biemo=biemo
           
-          include-data-files: app_icon.ico=app_icon.ico
+          include-data-files: ${{ inputs.icon_file }}=${{ inputs.icon_file }}
           
-          windows-icon-from-ico: app_icon.ico
+          windows-icon-from-ico: ${{ inputs.icon_file }}
           
           windows-console-mode: disable
           
@@ -290,9 +206,7 @@ jobs:
           assume-yes-for-downloads: true
           
           lto: no
-          
           low-memory: true
-          
           jobs: 2
           
           company-name: Your Company
@@ -301,50 +215,30 @@ jobs:
           product-version: 1.0.0.0
           file-description: Python Application
 
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: Windows-Build-${{ inputs.build_mode }}
-          path: |
-            build/*.exe
-            build/*.dist/
-          retention-days: 30
-          include-hidden-files: true
-
-      - name: Build Summary
-        if: always()
+      - name: Verify Build Output
         shell: pwsh
         run: |
-          Write-Host ""
-          Write-Host "==================================================" -ForegroundColor Cyan
-          Write-Host "Build Summary" -ForegroundColor Cyan
-          Write-Host "==================================================" -ForegroundColor Cyan
+          Write-Host "=== Verifying build output ===" -ForegroundColor Cyan
           
           if (Test-Path "build") {
-              $exeFiles = Get-ChildItem -Path "build" -Filter "*.exe" -Recurse -ErrorAction SilentlyContinue
-              if ($exeFiles -and $exeFiles.Count -gt 0) {
-                  Write-Host ""
-                  Write-Host "[SUCCESS] Generated $($exeFiles.Count) executable(s):" -ForegroundColor Green
-                  foreach ($f in $exeFiles) {
-                      $sizeMB = [math]::Round($f.Length / 1MB, 2)
-                      Write-Host "  - $($f.Name) ($sizeMB MB)"
-                  }
-              } else {
-                  Write-Host "[WARN] No .exe files found" -ForegroundColor Yellow
-              }
-              
-              $distDirs = Get-ChildItem -Path "build" -Filter "*.dist" -Directory -ErrorAction SilentlyContinue
-              if ($distDirs -and $distDirs.Count -gt 0) {
-                  Write-Host ""
-                  Write-Host "[INFO] Distribution folders:" -ForegroundColor Cyan
-                  foreach ($d in $distDirs) {
-                      $totalSize = (Get-ChildItem -Path $d.FullName -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
-                      if ($totalSize) {
-                          $totalSizeMB = [math]::Round($totalSize / 1MB, 2)
-                          Write-Host "  - $($d.Name) ($totalSizeMB MB total)"
+              $distDirs = Get-ChildItem -Path "build" -Filter "*.dist" -Directory
+              if ($distDirs) {
+                  foreach ($dist in $distDirs) {
+                      Write-Host "Checking distribution: $($dist.Name)" -ForegroundColor Cyan
+                      
+                      # 检查 rembg
+                      $rembgPath = Join-Path $dist.FullName "rembg"
+                      if (Test-Path $rembgPath) {
+                          Write-Host "  ✓ rembg package found" -ForegroundColor Green
+                          Get-ChildItem $rembgPath -Recurse -Name | Select-Object -First 10 | ForEach-Object { Write-Host "    - $_" }
+                      } else {
+                          Write-Host "  ✗ rembg package NOT found - this is a problem!" -ForegroundColor Red
                       }
-                  }
-              }
-          } else {
-              Write-Host "[ERROR] Build directory does not exist" -ForegroundColor Red
-          }
+                      
+                      # 检查 onnxruntime
+                      $onnxPath = Join-Path $dist.FullName "onnxruntime"
+                      if (Test-Path $onnxPath) {
+                          Write-Host "  ✓ onnxruntime package found" -ForegroundColor Green
+                      } else {
+                          Write-Host "  ✗ onnxruntime package NOT found" -ForegroundColor Red
+                      }
