@@ -1,4 +1,4 @@
-name: ☁️ 云端 Nuitka 极速打包 (v5.0 稳定修复版)
+name: ☁️ 云端 Nuitka 极速打包 (v5.1 修复版)
 
 on:
   workflow_dispatch:
@@ -62,11 +62,20 @@ jobs:
           Write-Host "=== Installing PySide6 ===" -ForegroundColor Cyan
           python -m pip install PySide6
           
+          Write-Host "=== Installing rembg and onnxruntime ===" -ForegroundColor Cyan
+          python -m pip install rembg onnxruntime
+          
+          Write-Host "=== Installing imageio ===" -ForegroundColor Cyan
+          python -m pip install imageio imageio-ffmpeg
+          
+          Write-Host "=== Installing other dependencies ===" -ForegroundColor Cyan
+          python -m pip install opencv-python numpy psutil
+          
           Write-Host "=== Installing project dependencies ===" -ForegroundColor Cyan
           if (Test-Path "requirements.txt") {
               $content = Get-Content "requirements.txt" -Raw
               $lines = $content -split "`n"
-              $skipKeywords = @("torch", "pyside6", "pyqt6", "numba", "cuda")
+              $skipKeywords = @("torch", "pyside6", "pyqt6", "numba", "cuda", "rembg", "onnxruntime", "imageio", "opencv", "numpy", "psutil")
               
               foreach ($line in $lines) {
                   $line = $line.Trim()
@@ -89,10 +98,14 @@ jobs:
                       }
                   }
               }
-          } else {
-              Write-Host "No requirements.txt found, installing defaults..." -ForegroundColor Yellow
-              python -m pip install pygame numpy pandas opencv-python PySide6
           }
+          
+          Write-Host "=== Verifying installations ===" -ForegroundColor Cyan
+          python -c "import rembg; print('rembg OK')"
+          python -c "import onnxruntime; print('onnxruntime OK')"
+          python -c "import PySide6; print('PySide6 OK')"
+          python -c "import cv2; print('opencv OK')"
+          python -c "import imageio; print('imageio OK')"
 
       - name: Create Icon Script
         shell: pwsh
@@ -103,71 +116,72 @@ jobs:
           import sys
 
           icon_base = sys.argv[1] if len(sys.argv) > 1 else "icon"
-          sizes = [16, 24, 32, 48, 64, 96, 128, 256]
+          required_sizes = [16, 32, 48, 256]
+          optional_sizes = [24, 64, 96, 128]
+          all_sizes = sorted(set(required_sizes + optional_sizes))
+          
           images = []
+          source_image = None
 
-          found_any = False
-          for size in sizes:
+          for size in sorted(all_sizes, reverse=True):
               patterns = [
-                  f"{icon_base}_{size}x{size}.ico",
                   f"{icon_base}_{size}x{size}.png",
-                  f"{icon_base}-{size}x{size}.ico",
+                  f"{icon_base}_{size}x{size}.ico",
                   f"{icon_base}-{size}x{size}.png",
-                  f"{size}x{size}.ico",
-                  f"{size}x{size}.png",
-                  f"{icon_base}{size}.ico",
                   f"{icon_base}{size}.png",
               ]
-              
-              img_found = None
               for pattern in patterns:
                   if os.path.exists(pattern):
-                      print(f"Found: {pattern}")
                       try:
-                          img = Image.open(pattern)
-                          if img.mode != "RGBA":
-                              img = img.convert("RGBA")
-                          if img.size != (size, size):
-                              img = img.resize((size, size), Image.LANCZOS)
-                          img_found = img
-                          found_any = True
+                          source_image = Image.open(pattern)
+                          if source_image.mode != "RGBA":
+                              source_image = source_image.convert("RGBA")
+                          print(f"Found source: {pattern} ({source_image.size})")
                           break
                       except Exception as e:
                           print(f"Error loading {pattern}: {e}")
-              
-              if img_found:
-                  images.append(img_found)
+              if source_image:
+                  break
 
-          if not found_any:
-              print("No icon files found, creating default icons...")
+          if not source_image:
+              for ext in ['.png', '.ico', '.jpg', '.jpeg', '.bmp']:
+                  base_file = f"{icon_base}{ext}"
+                  if os.path.exists(base_file):
+                      try:
+                          source_image = Image.open(base_file)
+                          if source_image.mode != "RGBA":
+                              source_image = source_image.convert("RGBA")
+                          print(f"Found base source: {base_file} ({source_image.size})")
+                          break
+                      except Exception as e:
+                          print(f"Error loading {base_file}: {e}")
+
+          if not source_image:
+              print("No icon files found, creating default icon...")
               from PIL import ImageDraw
-              for size in sizes:
-                  img = Image.new("RGBA", (size, size), (0, 120, 215, 255))
-                  draw = ImageDraw.Draw(img)
-                  margin = max(1, size // 8)
-                  draw.rectangle([margin, margin, size-margin-1, size-margin-1], 
-                               outline=(255, 255, 255, 255), width=max(1, size//16))
-                  images.append(img)
-              found_any = True
+              source_image = Image.new("RGBA", (256, 256), (0, 120, 215, 255))
+              draw = ImageDraw.Draw(source_image)
+              draw.rectangle([20, 20, 235, 235], outline=(255, 255, 255, 255), width=8)
 
-          if images:
-              images_sorted = sorted(images, key=lambda x: x.size[0], reverse=True)
-              images_sorted[0].save(
-                  "app_icon.ico",
-                  format="ICO",
-                  sizes=[(img.size[0], img.size[1]) for img in images_sorted],
-                  append_images=images_sorted[1:] if len(images_sorted) > 1 else []
-              )
-              print(f"Created app_icon.ico with {len(images)} sizes")
-              
-              os.makedirs("icons", exist_ok=True)
-              for img in images:
-                  size = img.size[0]
-                  img.save(f"icons/icon_{size}.png", format="PNG")
-              print("Created PNG icons in icons/ folder")
-          else:
-              print("ERROR: No images to save!")
-              sys.exit(1)
+          for size in all_sizes:
+              img = source_image.resize((size, size), Image.LANCZOS)
+              images.append(img)
+              print(f"Generated {size}x{size}")
+
+          images_sorted = sorted(images, key=lambda x: x.size[0], reverse=True)
+          images_sorted[0].save(
+              "app_icon.ico",
+              format="ICO",
+              sizes=[(img.size[0], img.size[1]) for img in images_sorted],
+              append_images=images_sorted[1:]
+          )
+          print(f"Created app_icon.ico with {len(images_sorted)} sizes")
+
+          os.makedirs("icons", exist_ok=True)
+          for img in images:
+              size = img.size[0]
+              img.save(f"icons/icon_{size}.png", format="PNG")
+          print("Created PNG icons in icons/ folder")
           "@
 
       - name: Prepare Multi-Size Icon
@@ -194,20 +208,14 @@ jobs:
           
           if (Test-Path "icons") {
               Copy-Item -Path "icons/*" -Destination "assets/" -Force
-              Write-Host "Copied icons to assets/"
           }
           
           if (Test-Path "app_icon.ico") {
               Copy-Item -Path "app_icon.ico" -Destination "assets/" -Force
-              Write-Host "Copied app_icon.ico to assets/"
           }
           
-          if (-not (Test-Path "assets/.keep")) {
-              New-Item -ItemType File -Path "assets/.keep" -Force | Out-Null
-          }
-          
-          Write-Host "Assets directory contents:" -ForegroundColor Cyan
-          Get-ChildItem -Path "assets" -Recurse | ForEach-Object { Write-Host "  $($_.FullName)" }
+          New-Item -ItemType Directory -Path "biemo/models" -Force | Out-Null
+          New-Item -ItemType Directory -Path "biemo/tools" -Force | Out-Null
 
       - name: Build with Nuitka
         uses: Nuitka/Nuitka-Action@main
@@ -215,6 +223,33 @@ jobs:
           nuitka-version: main
           script-name: ${{ inputs.script_name }}
           mode: ${{ inputs.build_mode }}
+          
+          include-module: |
+            rembg
+            rembg.sessions
+            rembg.sessions.u2net
+            rembg.sessions.isnet
+            rembg.sessions.base
+            onnxruntime
+            onnxruntime.capi
+            onnxruntime.capi.onnxruntime_pybind11_state
+            imageio
+            imageio.core
+            imageio.plugins
+            cv2
+            numpy
+            PIL
+            psutil
+          
+          include-package: |
+            rembg
+            onnxruntime
+            imageio
+          
+          include-package-data: |
+            rembg
+            onnxruntime
+            imageio
           
           nofollow-import-to: |
             sympy
@@ -241,7 +276,10 @@ jobs:
           
           module-parameter: torch-disable-jit=yes
           
-          include-data-dir: assets=assets
+          include-data-dir: |
+            assets=assets
+            biemo=biemo
+          
           include-data-files: app_icon.ico=app_icon.ico
           
           windows-icon-from-ico: app_icon.ico
@@ -293,7 +331,6 @@ jobs:
                       Write-Host "  - $($f.Name) ($sizeMB MB)"
                   }
               } else {
-                  Write-Host ""
                   Write-Host "[WARN] No .exe files found" -ForegroundColor Yellow
               }
               
@@ -310,6 +347,5 @@ jobs:
                   }
               }
           } else {
-              Write-Host ""
               Write-Host "[ERROR] Build directory does not exist" -ForegroundColor Red
           }
