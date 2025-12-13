@@ -787,19 +787,51 @@ class ModelManager:
         gc.collect()
         logger.info("模型缓存已清除")
 
-# ==================== rembg 导入 ====================
+# ==================== rembg 导入（增强错误处理）====================
 USE_REMBG = False
 rembg_remove = None
 rembg_new_session = None
+REMBG_ERROR_MSG = ""
 
-try:
-    from rembg import remove as rembg_remove, new_session as rembg_new_session
-    USE_REMBG = True
+def _try_import_rembg():
+    """尝试导入 rembg，返回 (success, error_message)"""
+    global USE_REMBG, rembg_remove, rembg_new_session, REMBG_ERROR_MSG
+    
+    try:
+        # 首先检查 onnxruntime
+        try:
+            import onnxruntime
+        except ImportError:
+            REMBG_ERROR_MSG = "onnxruntime 未安装"
+            return False, REMBG_ERROR_MSG
+        except Exception as e:
+            REMBG_ERROR_MSG = f"onnxruntime 加载失败: {e}"
+            return False, REMBG_ERROR_MSG
+        
+        # 然后导入 rembg
+        try:
+            from rembg import remove as _remove, new_session as _new_session
+            rembg_remove = _remove
+            rembg_new_session = _new_session
+            USE_REMBG = True
+            return True, None
+        except ImportError:
+            REMBG_ERROR_MSG = "rembg 模块未安装"
+            return False, REMBG_ERROR_MSG
+        except Exception as e:
+            REMBG_ERROR_MSG = f"rembg 加载失败: {e}"
+            return False, REMBG_ERROR_MSG
+            
+    except Exception as e:
+        REMBG_ERROR_MSG = f"导入过程发生未知错误: {e}"
+        return False, REMBG_ERROR_MSG
+
+# 执行导入
+_import_success, _import_msg = _try_import_rembg()
+if _import_success:
     logger.success("✓ rembg 模块加载成功")
-except ImportError:
-    logger.error("✗ rembg 模块未安装")
-except Exception as e:
-    logger.error(f"rembg 加载失败: {e}")
+else:
+    logger.error(f"✗ rembg 模块不可用: {_import_msg}")
 
 # 执行硬件检测和模型扫描
 HardwareInfo.detect()
@@ -1870,6 +1902,10 @@ class ModelSelector(QComboBox):
                 break
     
     def _on_selection_changed(self, index):
+        # 安全检查：如果 loader 存在但已停止，强制清除
+        if getattr(self, '_loader', None) and not self._loader.isRunning():
+            self._loader = None
+
         model_id = self.currentData()
         if model_id:
             exists = ModelManager.check_model_exists(model_id)
@@ -1887,6 +1923,8 @@ class ModelSelector(QComboBox):
             else:
                 if getattr(self, '_loader', None) and self._loader.isRunning():
                     logger.info("正在下载/加载模型，请稍候...")
+                    # 恢复之前的选择，或者保持当前显示但状态为下载中
+                    # 这里为了简单，我们暂不自动回退，因为用户可能就是想下载
                     return
                 logger.info("模型缺失，开始自动下载并加载...")
                 self.setEnabled(False)
@@ -1894,6 +1932,7 @@ class ModelSelector(QComboBox):
                 def _on_done(s, mid):
                     logger.success("模型下载并加载完成")
                     self.setEnabled(True)
+                    self._loader = None # 清除 loader 引用
                     # 只更新状态，不刷新列表，避免触发递归
                     ModelManager.scan_models()
                     # 使用 blockSignals 阻止信号触发
@@ -1905,6 +1944,8 @@ class ModelSelector(QComboBox):
                 def _on_err(e):
                     logger.error(f"模型加载失败: {e}")
                     self.setEnabled(True)
+                    self._loader = None # 清除 loader 引用，允许后续操作
+                    # 可以在这里重置选择到默认模型，或者保持当前选择但标记为无效
                 self._loader.finished.connect(_on_done)
                 self._loader.error.connect(_on_err)
                 self._loader.start()
@@ -1923,7 +1964,7 @@ class ActivationDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("软件激活验证")
-        self.setFixedSize(600, 530)
+        self.setFixedSize(500, 480) # 宽减100(600->500), 高减50(530->480)
         self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
         
         self.activated = False
@@ -1956,7 +1997,7 @@ class ActivationDialog(QDialog):
         self.mac_edit.setFixedHeight(40)
         
         copy_btn = QPushButton("复制")
-        copy_btn.setFixedSize(80, 40)
+        copy_btn.setFixedSize(77, 40) # 宽减3(80->77)
         copy_btn.clicked.connect(self.copy_machine_code)
         
         code_layout.addWidget(self.mac_edit)
@@ -1984,6 +2025,13 @@ class ActivationDialog(QDialog):
         trial_btn = QPushButton("试用 (15分钟)")
         trial_btn.setFixedHeight(50)
         trial_btn.clicked.connect(self.start_trial)
+        
+        # 调整边距以间接减少按钮宽度，或直接设置
+        # 由于使用了 layout addWidget(..., stretch)，按钮宽度是自适应的。
+        # 用户要求"窗口中的控件和按钮的宽都减小三"。
+        # 窗口变窄了100，内部控件如果随布局缩放，自然会变窄。
+        # 如果有固定宽度的控件（如 copy_btn），需要手动减小。
+        # 其他自适应控件会随窗口变窄而变窄，无需额外操作。
         
         btn_layout.addWidget(trial_btn, 1)
         btn_layout.addWidget(activate_btn, 2)
@@ -2974,7 +3022,8 @@ class SpriteWorkerWithEditor(BaseWorker):
                         self.progress.emit(int(i/total*30), f"采样 {len(data)}")
                 cap.release()
                 if need_remove_bg:
-                    num_workers = min(self.params.get("num_threads", 4), len(data))
+                    # 修复：确保 num_workers 至少为 1，防止 ValueError
+                    num_workers = max(1, min(self.params.get("num_threads", 4), len(data)))
                     results = {}
                     processed = 0
                     with ThreadPoolExecutor(max_workers=num_workers) as executor:
@@ -2999,7 +3048,8 @@ class SpriteWorkerWithEditor(BaseWorker):
                     data.append((i, np.array(img)))
                     self.progress.emit(int((i+1)/len(files)*30), f"加载 {i+1}/{len(files)}")
                 if need_remove_bg:
-                    num_workers = min(self.params.get("num_threads", 4), len(data))
+                    # 修复：确保 num_workers 至少为 1，防止 ValueError
+                    num_workers = max(1, min(self.params.get("num_threads", 4), len(data)))
                     results = {}
                     processed = 0
                     with ThreadPoolExecutor(max_workers=num_workers) as executor:
@@ -3632,7 +3682,7 @@ class MainWindow(QWidget):
         # 编辑已有精灵图按钮
         edit_existing_btn = QPushButton("编辑已有精灵图")
         edit_existing_btn.clicked.connect(self._edit_existing_sprite)
-        edit_existing_btn.hide() # 初始隐藏，随 Tab 切换显示
+        # 默认显示 (因为默认 Tab 是 0)
         # 将其添加为特殊的 action button，或者在 tab 切换逻辑中单独处理
         # 这里为了简单，我们把它也加入 action_btns，但 key 可以用个特殊值，或者直接在 tab 0 显示时一起显示
         self.sprite_edit_btn = edit_existing_btn 
@@ -3693,6 +3743,9 @@ class MainWindow(QWidget):
         
         # 监听 Tab 切换
         self.tabs.currentChanged.connect(self._on_tab_changed)
+        
+        # 初始化调用一次，确保按钮状态正确
+        self._on_tab_changed(self.tabs.currentIndex())
 
     def _on_tab_changed(self, index):
         """Tab 切换时显示对应的操作按钮"""
@@ -3703,10 +3756,12 @@ class MainWindow(QWidget):
                 btn.hide()
         
         # 特殊处理编辑已有精灵图按钮
+        # 强制更新可见性，确保在任何时候切换回来都能显示
         if index == 0:
-            self.sprite_edit_btn.show()
+            self.sprite_edit_btn.setVisible(True)
+            self.sprite_edit_btn.raise_() # 确保在最上层
         else:
-            self.sprite_edit_btn.hide()
+            self.sprite_edit_btn.setVisible(False)
         
         self._adjust_splitter_to_tab()
 
@@ -5233,7 +5288,13 @@ class MainWindow(QWidget):
             logger.error(str(e))
 
     def _edit_existing_sprite(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "选择精灵图", "", "PNG 图片 (*.png)")
+        # 优先使用当前输入框中的文件
+        file_path = self.sprite_path_edit.text().strip()
+        
+        # 如果输入框为空或者不是文件，则弹出选择框
+        if not file_path or not os.path.isfile(file_path):
+            file_path, _ = QFileDialog.getOpenFileName(self, "选择精灵图", "", "PNG 图片 (*.png)")
+        
         if not file_path:
             return
         try:
