@@ -91,23 +91,18 @@ jobs:
               python -m pip install pygame numpy pandas opencv-python PySide6
           }
 
-      - name: Prepare Multi-Size Icon
+      - name: Create Icon Script
         shell: pwsh
         run: |
-          Write-Host "=== Creating Multi-Size ICO ===" -ForegroundColor Cyan
-          
-          $iconBaseName = "${{ inputs.icon_base_name }}"
-          
-          # 创建 Python 脚本文件
-          $scriptContent = @'
+          Set-Content -Path "create_icon.py" -Value @"
           from PIL import Image
           import os
           import sys
-          
+
           icon_base = sys.argv[1] if len(sys.argv) > 1 else "icon"
           sizes = [16, 24, 32, 48, 64, 96, 128, 256]
           images = []
-          
+
           found_any = False
           for size in sizes:
               patterns = [
@@ -127,8 +122,8 @@ jobs:
                       print(f"Found: {pattern}")
                       try:
                           img = Image.open(pattern)
-                          if img.mode != 'RGBA':
-                              img = img.convert('RGBA')
+                          if img.mode != "RGBA":
+                              img = img.convert("RGBA")
                           if img.size != (size, size):
                               img = img.resize((size, size), Image.LANCZOS)
                           img_found = img
@@ -139,45 +134,47 @@ jobs:
               
               if img_found:
                   images.append(img_found)
-          
+
           if not found_any:
               print("No icon files found, creating default icons...")
               from PIL import ImageDraw
               for size in sizes:
-                  img = Image.new('RGBA', (size, size), (0, 120, 215, 255))
+                  img = Image.new("RGBA", (size, size), (0, 120, 215, 255))
                   draw = ImageDraw.Draw(img)
                   margin = max(1, size // 8)
                   draw.rectangle([margin, margin, size-margin-1, size-margin-1], 
                                outline=(255, 255, 255, 255), width=max(1, size//16))
                   images.append(img)
               found_any = True
-          
+
           if images:
               images_sorted = sorted(images, key=lambda x: x.size[0], reverse=True)
               images_sorted[0].save(
-                  'app_icon.ico',
-                  format='ICO',
+                  "app_icon.ico",
+                  format="ICO",
                   sizes=[(img.size[0], img.size[1]) for img in images_sorted],
                   append_images=images_sorted[1:] if len(images_sorted) > 1 else []
               )
               print(f"Created app_icon.ico with {len(images)} sizes")
               
-              os.makedirs('icons', exist_ok=True)
+              os.makedirs("icons", exist_ok=True)
               for img in images:
                   size = img.size[0]
-                  img.save(f'icons/icon_{size}.png', format='PNG')
+                  img.save(f"icons/icon_{size}.png", format="PNG")
               print("Created PNG icons in icons/ folder")
           else:
               print("ERROR: No images to save!")
               sys.exit(1)
-          '@
-          
-          $scriptContent | Out-File -FilePath "create_icon.py" -Encoding utf8
-          python create_icon.py $iconBaseName
+          "@
+
+      - name: Prepare Multi-Size Icon
+        shell: pwsh
+        run: |
+          Write-Host "=== Creating Multi-Size ICO ===" -ForegroundColor Cyan
+          python create_icon.py "${{ inputs.icon_base_name }}"
           
           if (Test-Path "app_icon.ico") {
               Write-Host "Multi-size icon created successfully!" -ForegroundColor Green
-              python -c "from PIL import Image; ico = Image.open('app_icon.ico'); print('ICO created with sizes:', ico.info.get('sizes', [ico.size]))"
           } else {
               Write-Host "Failed to create icon!" -ForegroundColor Red
               exit 1
