@@ -265,7 +265,7 @@ jobs:
           echo "INCLUDE_PACKAGE_DATA<<EOF" >> $env:GITHUB_ENV
           echo $packageDataStr >> $env:GITHUB_ENV
           echo "EOF" >> $env:GITHUB_ENV
-    - name: Prepare Assets
+      - name: Prepare Assets
         shell: pwsh
         run: |
           if (-not (Test-Path "assets")) {
