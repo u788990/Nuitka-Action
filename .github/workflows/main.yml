@@ -59,6 +59,9 @@ jobs:
           Write-Host "=== Installing CPU Torch ===" -ForegroundColor Cyan
           python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
           
+          Write-Host "=== Installing PySide6 ===" -ForegroundColor Cyan
+          python -m pip install PySide6
+          
           Write-Host "=== Installing project dependencies ===" -ForegroundColor Cyan
           if (Test-Path "requirements.txt") {
               $content = Get-Content "requirements.txt" -Raw
