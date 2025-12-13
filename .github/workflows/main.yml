@@ -1,30 +1,93 @@
-name: ☁️ 云端 Nuitka 极速打包 (v5.4 rembg修复版)
-
+name: Nuitka Build (v7.2)
 on:
   workflow_dispatch:
     inputs:
       script_name:
-        description: 'Python 入口脚本'
+        description: 'Python 入口脚本文件名'
         required: true
         default: 'main.py'
+        type: string
       
       build_mode:
         description: '打包模式'
         required: true
-        default: 'standalone' 
+        default: 'standalone'
         type: choice
         options:
           - standalone
           - onefile
       
       icon_file:
-        description: 'ICO 图标文件名'
-        required: true
+        description: '图标文件名 (留空则不使用图标)'
+        required: false
         default: 'exe.ico'
+        type: string
+      
+      requirements_file:
+        description: '依赖文件名'
+        required: false
+        default: 'requirements.txt'
+        type: string
+      
+      python_version:
+        description: 'Python 版本'
+        required: true
+        default: '3.11'
+        type: choice
+        options:
+          - '3.10'
+          - '3.11'
+          - '3.12'
+      
+      enable_console:
+        description: '启用控制台窗口'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      
+      enable_pyside6:
+        description: '启用 PySide6 插件'
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      
+      extra_include_packages:
+        description: '额外包含的包 (逗号分隔)'
+        required: false
+        default: ''
+        type: string
+      
+      product_name:
+        description: '产品名称'
+        required: false
+        default: 'MyApp'
+        type: string
+      
+      product_version:
+        description: '产品版本'
+        required: false
+        default: '1.0.0.0'
+        type: string
+      
+      company_name:
+        description: '公司名称'
+        required: false
+        default: 'MyCompany'
+        type: string
+
+env:
+  PYTHONIOENCODING: utf-8
+  PYTHONUTF8: 1
 
 jobs:
   build:
-    name: 🚀 Build on Windows
+    name: Build on Windows
     runs-on: windows-latest
     timeout-minutes: 180
 
@@ -39,206 +102,343 @@ jobs:
           maximum-size: 16GB
           disk-root: "C:"
 
-      - name: Setup Python 3.11
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: ${{ inputs.python_version }}
           architecture: 'x64'
-          cache: 'pip'
-          cache-dependency-path: 'requirements.txt'
+
+      - name: Validate Input Files
+        id: validate
+        shell: pwsh
+        run: |
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          $hasError = $false
+          
+          $scriptFile = "${{ inputs.script_name }}"
+          if (Test-Path $scriptFile) {
+            Write-Host "[OK] Script file: $scriptFile" -ForegroundColor Green
+          } else {
+            Write-Host "[ERROR] Script file not found: $scriptFile" -ForegroundColor Red
+            Get-ChildItem -Filter "*.py" | ForEach-Object { Write-Host "   Available: $($_.Name)" }
+            $hasError = $true
+          }
+          
+          $reqFile = "${{ inputs.requirements_file }}"
+          if (Test-Path $reqFile) {
+            Write-Host "[OK] Requirements file: $reqFile" -ForegroundColor Green
+          } else {
+            Write-Host "[WARN] Requirements file not found: $reqFile" -ForegroundColor Yellow
+          }
+          
+          $iconFile = "${{ inputs.icon_file }}"
+          $iconExists = "false"
+          if ($iconFile -and $iconFile -ne "" -and (Test-Path $iconFile)) {
+            Write-Host "[OK] Icon file: $iconFile" -ForegroundColor Green
+            $iconExists = "true"
+          } elseif ($iconFile -and $iconFile -ne "") {
+            Write-Host "[WARN] Icon file not found: $iconFile" -ForegroundColor Yellow
+          }
+          echo "icon_exists=$iconExists" >> $env:GITHUB_OUTPUT
+          
+          if ($hasError) { exit 1 }
 
       - name: Install Dependencies
         shell: pwsh
         run: |
-          Write-Host "=== Upgrading pip ===" -ForegroundColor Cyan
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           python -m pip install --upgrade pip
+          python -m pip install nuitka zstandard ordered-set
           
-          Write-Host "=== Installing build tools ===" -ForegroundColor Cyan
-          python -m pip install wheel nuitka zstandard pillow ordered-set
+          $reqFile = "${{ inputs.requirements_file }}"
+          if (Test-Path $reqFile) {
+            Write-Host ">>> Installing dependencies from $reqFile" -ForegroundColor Yellow
+            python -m pip install -r $reqFile
+          }
           
-          Write-Host "=== Installing CPU Torch ===" -ForegroundColor Cyan
-          python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+          Write-Host "Dependencies installed successfully" -ForegroundColor Green
+          python -m pip list
+
+      - name: Verify Modules
+        shell: pwsh
+        run: |
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          $env:PYTHONIOENCODING = "utf-8"
           
-          Write-Host "=== Installing PySide6 ===" -ForegroundColor Cyan
-          python -m pip install PySide6
+          Write-Host ">>> Verifying installed modules" -ForegroundColor Yellow
           
-          Write-Host "=== Installing rembg with all dependencies ===" -ForegroundColor Cyan
-          python -m pip install rembg[cli] onnxruntime pooch
-          
-          Write-Host "=== Installing imageio ===" -ForegroundColor Cyan
-          python -m pip install imageio imageio-ffmpeg
-          
-          Write-Host "=== Installing other dependencies ===" -ForegroundColor Cyan
-          python -m pip install opencv-python numpy psutil scikit-image scipy
-          
-          Write-Host "=== Installing project dependencies ===" -ForegroundColor Cyan
-          if (Test-Path "requirements.txt") {
-              $content = Get-Content "requirements.txt" -Raw
-              $lines = $content -split "`n"
-              $skipKeywords = @("torch", "pyside6", "pyqt6", "numba", "cuda", "rembg", "onnxruntime", "imageio", "opencv", "numpy", "psutil", "scikit", "scipy", "pooch")
-              
-              foreach ($line in $lines) {
-                  $line = $line.Trim()
-                  if ([string]::IsNullOrEmpty($line) -or $line.StartsWith("#")) { continue }
-                  
-                  $skip = $false
-                  foreach ($kw in $skipKeywords) {
-                      if ($line.ToLower().Contains($kw)) { 
-                          Write-Host "Skipping: $line" -ForegroundColor Yellow
-                          $skip = $true
-                          break 
-                      }
-                  }
-                  
-                  if (-not $skip) {
-                      Write-Host "Installing: $line"
-                      python -m pip install $line 2>&1 | Out-Null
-                  }
+          $modules = @("rembg", "onnxruntime", "PySide6", "cv2")
+          foreach ($mod in $modules) {
+            try {
+              $result = python -c "import $mod; print($mod.__file__)" 2>&1
+              if ($LASTEXITCODE -eq 0) {
+                Write-Host "[OK] $mod installed: $result" -ForegroundColor Green
+              } else {
+                Write-Host "[WARN] $mod not available" -ForegroundColor Yellow
               }
-          }
-          
-          Write-Host "=== Verifying rembg installation ===" -ForegroundColor Cyan
-          python -c "import rembg; print('rembg path:', rembg.__file__)"
-          python -c "from rembg import remove, new_session; print('rembg functions OK')"
-          python -c "import onnxruntime; print('onnxruntime providers:', onnxruntime.get_available_providers())"
-
-      - name: Verify Icon File
-        shell: pwsh
-        run: |
-          Write-Host "=== Checking icon file ===" -ForegroundColor Cyan
-          $iconFile = "${{ inputs.icon_file }}"
-          
-          if (Test-Path $iconFile) {
-              $fileSize = (Get-Item $iconFile).Length
-              Write-Host "Icon file found: $iconFile ($fileSize bytes)" -ForegroundColor Green
-          } else {
-              Write-Host "ERROR: Icon file '$iconFile' not found!" -ForegroundColor Red
-              Write-Host "Available .ico files:" -ForegroundColor Yellow
-              Get-ChildItem -Filter "*.ico" | ForEach-Object { Write-Host "  - $($_.Name)" }
-              exit 1
+            } catch {
+              Write-Host "[WARN] $mod not available" -ForegroundColor Yellow
+            }
           }
 
-      - name: Prepare Assets
+      - name: Generate Nuitka Parameters
+        id: nuitka_params
         shell: pwsh
         run: |
-          Write-Host "=== Preparing assets directory ===" -ForegroundColor Cyan
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          $reqFile = "${{ inputs.requirements_file }}"
+          $packages = @()
+          $packageData = @()
           
+          # 跳过的包列表
+          $skipPackages = @(
+            "pyside6_addons", "pyside6_essentials",
+            "pyside6-addons", "pyside6-essentials"
+          )
+          
+          if (Test-Path $reqFile) {
+            $content = Get-Content $reqFile -Encoding UTF8
+            foreach ($line in $content) {
+              $line = $line.Trim()
+              if ([string]::IsNullOrEmpty($line) -or $line.StartsWith("#")) { continue }
+              
+              $pkgName = $line -replace '[<>=!].*$', '' -replace '\[.*\]', ''
+              $pkgName = $pkgName.Trim().ToLower()
+              
+              if ($pkgName -in $skipPackages) { continue }
+              
+              # 修复：正确的包名到导入名映射
+              $importName = switch ($pkgName) {
+                "pillow" { "PIL" }
+                "opencv-python" { "cv2" }
+                "opencv-python-headless" { "cv2" }
+                "opencv_python" { "cv2" }
+                "opencv_python_headless" { "cv2" }
+                "scikit-image" { "skimage" }
+                "scikit-learn" { "sklearn" }
+                "pyside6" { "PySide6" }
+                "pyqt5" { "PyQt5" }
+                "pyqt6" { "PyQt6" }
+                "beautifulsoup4" { "bs4" }
+                "python-dateutil" { "dateutil" }
+                default { $pkgName -replace '-', '_' }
+              }
+              
+              if ($importName) {
+                if ($importName -notin $packages) {
+                  $packages += $importName
+                }
+                if ($importName -in @("rembg", "onnxruntime", "pooch", "PySide6", "cv2")) {
+                  if ($importName -notin $packageData) {
+                    $packageData += $importName
+                  }
+                }
+              }
+            }
+          }
+          
+          $extraPkgs = "${{ inputs.extra_include_packages }}"
+          if ($extraPkgs) {
+            $extraPkgs.Split(',') | ForEach-Object {
+              $pkg = $_.Trim()
+              if ($pkg -and $pkg -notin $packages) {
+                $packages += $pkg
+                if ($pkg -notin $packageData) {
+                  $packageData += $pkg
+                }
+              }
+            }
+          }
+          
+          $packagesStr = $packages -join "`n"
+          $packageDataStr = $packageData -join "`n"
+          
+          Write-Host "Include packages:" -ForegroundColor Cyan
+          Write-Host $packagesStr
+          Write-Host "Include package data:" -ForegroundColor Cyan
+          Write-Host $packageDataStr
+          
+          echo "INCLUDE_PACKAGES<<EOF" >> $env:GITHUB_ENV
+          echo $packagesStr >> $env:GITHUB_ENV
+          echo "EOF" >> $env:GITHUB_ENV
+          
+          echo "INCLUDE_PACKAGE_DATA<<EOF" >> $env:GITHUB_ENV
+          echo $packageDataStr >> $env:GITHUB_ENV
+          echo "EOF" >> $env:GITHUB_ENV
+    - name: Prepare Assets
+        shell: pwsh
+        run: |
           if (-not (Test-Path "assets")) {
-              New-Item -ItemType Directory -Path "assets" -Force | Out-Null
+            New-Item -ItemType Directory -Path "assets" -Force | Out-Null
           }
-          
           $iconFile = "${{ inputs.icon_file }}"
-          if (Test-Path $iconFile) {
-              Copy-Item -Path $iconFile -Destination "assets/" -Force
-              Write-Host "Copied $iconFile to assets/" -ForegroundColor Green
+          if ($iconFile -and (Test-Path $iconFile)) {
+            Copy-Item $iconFile -Destination "assets/" -Force
+            Write-Host "Icon copied to assets/" -ForegroundColor Green
           }
-          
-          New-Item -ItemType Directory -Path "biemo/models" -Force | Out-Null
-          New-Item -ItemType Directory -Path "biemo/tools" -Force | Out-Null
-          Set-Content -Path "biemo/models/.gitkeep" -Value ""
-          Set-Content -Path "biemo/tools/.gitkeep" -Value ""
-          Set-Content -Path "biemo/README.txt" -Value "Models and tools directory"
-          
-          Write-Host "Assets prepared successfully" -ForegroundColor Green
 
-      - name: Build with Nuitka
+      - name: Set Nuitka Cache Dir
+        shell: pwsh
+        run: |
+          $cacheDir = "C:\nuitka_cache"
+          New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
+          echo "NUITKA_CACHE_DIR=$cacheDir" >> $env:GITHUB_ENV
+          Write-Host "Nuitka cache directory set to: $cacheDir" -ForegroundColor Green
+
+      - name: Build with Nuitka (with icon)
+        if: steps.validate.outputs.icon_exists == 'true'
         uses: Nuitka/Nuitka-Action@main
         with:
           nuitka-version: main
           script-name: ${{ inputs.script_name }}
           mode: ${{ inputs.build_mode }}
-          
-          # 包含完整的包（让 Nuitka 自动处理子模块）
-          include-package: |
-            rembg
-            onnxruntime
-            imageio
-            cv2
-            numpy
-            PIL
-            psutil
-            pooch
-            scipy
-            skimage
-          
-          # 包含包数据文件（模型文件等）
-          include-package-data: |
-            rembg
-            onnxruntime
-            pooch
-          
-          # 排除不需要的模块
+          include-package: ${{ env.INCLUDE_PACKAGES }}
+          include-package-data: ${{ env.INCLUDE_PACKAGE_DATA }}
           nofollow-import-to: |
-            sympy
-            tkinter
-            unittest
-            test
-            tests
-            matplotlib.tests
             pytest
             setuptools
             distutils
-            doctest
-            numba
-            numba.cuda
-          
-          enable-plugins: pyside6
-          
-          noinclude-numba-mode: nofollow
+            unittest
+            test
+            tests
+          enable-plugins: ${{ inputs.enable_pyside6 == 'true' && 'pyside6' || '' }}
+          include-qt-plugins: |
+            sensible
+            qml
           noinclude-pytest-mode: nofollow
           noinclude-setuptools-mode: nofollow
           noinclude-unittest-mode: nofollow
-          
-          module-parameter: torch-disable-jit=yes
-          
-          include-data-dir: |
-            assets=assets
-            biemo=biemo
-          
-          include-data-files: ${{ inputs.icon_file }}=${{ inputs.icon_file }}
-          
           windows-icon-from-ico: ${{ inputs.icon_file }}
-          
-          windows-console-mode: disable
-          
+          windows-console-mode: ${{ inputs.enable_console == 'true' && 'force' || 'disable' }}
           output-dir: build
-          
           assume-yes-for-downloads: true
-          
-          lto: no
-          low-memory: true
-          jobs: 2
-          
-          company-name: Your Company
-          product-name: Your Product
-          file-version: 1.0.0.0
-          product-version: 1.0.0.0
-          file-description: Python Application
+          company-name: ${{ inputs.company_name }}
+          product-name: ${{ inputs.product_name }}
+          file-version: ${{ inputs.product_version }}
+          product-version: ${{ inputs.product_version }}
+          file-description: ${{ inputs.product_name }}
+
+      - name: Build with Nuitka (without icon)
+        if: steps.validate.outputs.icon_exists != 'true'
+        uses: Nuitka/Nuitka-Action@main
+        with:
+          nuitka-version: main
+          script-name: ${{ inputs.script_name }}
+          mode: ${{ inputs.build_mode }}
+          include-package: ${{ env.INCLUDE_PACKAGES }}
+          include-package-data: ${{ env.INCLUDE_PACKAGE_DATA }}
+          nofollow-import-to: |
+            pytest
+            setuptools
+            distutils
+            unittest
+            test
+            tests
+          enable-plugins: ${{ inputs.enable_pyside6 == 'true' && 'pyside6' || '' }}
+          include-qt-plugins: |
+            sensible
+            qml
+          noinclude-pytest-mode: nofollow
+          noinclude-setuptools-mode: nofollow
+          noinclude-unittest-mode: nofollow
+          windows-console-mode: ${{ inputs.enable_console == 'true' && 'force' || 'disable' }}
+          output-dir: build
+          assume-yes-for-downloads: true
+          company-name: ${{ inputs.company_name }}
+          product-name: ${{ inputs.product_name }}
+          file-version: ${{ inputs.product_version }}
+          product-version: ${{ inputs.product_version }}
+          file-description: ${{ inputs.product_name }}
 
       - name: Verify Build Output
         shell: pwsh
         run: |
-          Write-Host "=== Verifying build output ===" -ForegroundColor Cyan
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          Write-Host "========================================" -ForegroundColor Cyan
+          Write-Host "         Verifying Build Output" -ForegroundColor Cyan
+          Write-Host "========================================" -ForegroundColor Cyan
           
           if (Test-Path "build") {
-              $distDirs = Get-ChildItem -Path "build" -Filter "*.dist" -Directory
-              if ($distDirs) {
-                  foreach ($dist in $distDirs) {
-                      Write-Host "Checking distribution: $($dist.Name)" -ForegroundColor Cyan
-                      
-                      # 检查 rembg
-                      $rembgPath = Join-Path $dist.FullName "rembg"
-                      if (Test-Path $rembgPath) {
-                          Write-Host "  ✓ rembg package found" -ForegroundColor Green
-                          Get-ChildItem $rembgPath -Recurse -Name | Select-Object -First 10 | ForEach-Object { Write-Host "    - $_" }
-                      } else {
-                          Write-Host "  ✗ rembg package NOT found - this is a problem!" -ForegroundColor Red
-                      }
-                      
-                      # 检查 onnxruntime
-                      $onnxPath = Join-Path $dist.FullName "onnxruntime"
-                      if (Test-Path $onnxPath) {
-                          Write-Host "  ✓ onnxruntime package found" -ForegroundColor Green
-                      } else {
-                          Write-Host "  ✗ onnxruntime package NOT found" -ForegroundColor Red
-                      }
+            Write-Host "Build directory contents:" -ForegroundColor Yellow
+            Get-ChildItem -Path "build" -Recurse -Depth 2 | ForEach-Object {
+              Write-Host $_.FullName
+            }
+            
+            $distDirs = Get-ChildItem -Path "build" -Filter "*.dist" -Directory
+            foreach ($dist in $distDirs) {
+              Write-Host ""
+              Write-Host "Checking $($dist.Name):" -ForegroundColor Cyan
+              
+              $checkPaths = @{
+                "rembg" = "rembg"
+                "onnxruntime" = "onnxruntime"
+                "PySide6" = "PySide6"
+                "cv2" = "cv2"
+              }
+              
+              foreach ($item in $checkPaths.GetEnumerator()) {
+                $checkPath = Join-Path $dist.FullName $item.Value
+                if (Test-Path $checkPath) {
+                  Write-Host "[OK] $($item.Key) packaged" -ForegroundColor Green
+                } else {
+                  Write-Host "[INFO] $($item.Key) not found (may be embedded)" -ForegroundColor Yellow
+                }
+              }
+            }
+            
+            $exeFiles = Get-ChildItem -Path "build" -Filter "*.exe" -Recurse
+            if ($exeFiles) {
+              Write-Host ""
+              Write-Host "Executable files found:" -ForegroundColor Green
+              $exeFiles | ForEach-Object {
+                $size = [math]::Round($_.Length / 1MB, 2)
+                Write-Host "  $($_.Name) - $size MB" -ForegroundColor Cyan
+              }
+            }
+          } else {
+            Write-Host "[ERROR] Build directory not found" -ForegroundColor Red
+            exit 1
+          }
+
+      - name: Upload Artifact (standalone)
+        if: inputs.build_mode == 'standalone'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.product_name }}-${{ inputs.product_version }}-standalone
+          path: build/*.dist/
+          include-hidden-files: true
+          retention-days: 30
+
+      - name: Upload Artifact (onefile)
+        if: inputs.build_mode == 'onefile'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.product_name }}-${{ inputs.product_version }}-onefile
+          path: build/*.exe
+          retention-days: 30
+
+      - name: Cleanup to free disk space
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host ">>> Cleaning up temporary files..." -ForegroundColor Yellow
+          Remove-Item -Recurse -Force "$env:LOCALAPPDATA\pip\cache" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "C:\nuitka_cache" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "$env:TEMP\*" -ErrorAction SilentlyContinue
+          Write-Host "Disk cleanup completed" -ForegroundColor Green
+
+      - name: Build Summary
+        shell: pwsh
+        run: |
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          Write-Host ""
+          Write-Host "========================================" -ForegroundColor Green
+          Write-Host "           Build Complete!" -ForegroundColor Green
+          Write-Host "========================================" -ForegroundColor Green
+          Write-Host ""
+          Write-Host "Product: ${{ inputs.product_name }}" -ForegroundColor Cyan
+          Write-Host "Version: ${{ inputs.product_version }}" -ForegroundColor Cyan
+          Write-Host "Mode: ${{ inputs.build_mode }}" -ForegroundColor Cyan
+          Write-Host "Python: ${{ inputs.python_version }}" -ForegroundColor Cyan
+          Write-Host ""
+          Write-Host "Download artifact from Actions page" -ForegroundColor Yellow
