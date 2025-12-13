@@ -3439,6 +3439,41 @@ class SingleImageWorker(BaseWorker):
                                     resized.save(str(png_path), format='PNG')
                                 except Exception as ex:
                                     logger.error(f"生成 {s}x{s} PNG 失败: {ex}")
+                        
+                        # 4. 生成系统 ICO (多尺寸容器)
+                        if self.params.get("ico_system"):
+                            try:
+                                # 系统 ICO 推荐包含的尺寸
+                                # 注意：PIL save format='ICO' 时，可以通过 append_images 参数传入其他尺寸的图像
+                                # 第一个图像将作为主图像
+                                
+                                # 过滤出需要的尺寸
+                                target_sizes = sorted([s for s in ico_sizes if s in [16, 24, 32, 48, 256]], reverse=True)
+                                if not target_sizes:
+                                    target_sizes = [256, 48, 32, 16] # 默认回退
+                                
+                                ico_images = []
+                                for s in target_sizes:
+                                    resized = square_pil.resize((s, s), Image.LANCZOS)
+                                    if resized.mode != 'RGBA':
+                                        resized = resized.convert('RGBA')
+                                    ico_images.append(resized)
+                                
+                                if ico_images:
+                                    pcico_name = f"{Path(self.output).stem}_pcico.ico"
+                                    pcico_path = Path(self.output).parent / pcico_name
+                                    
+                                    # 第一个图像作为 base，其余作为附加
+                                    # 注意：append_images 应该是 Image 对象列表
+                                    ico_images[0].save(
+                                        str(pcico_path), 
+                                        format='ICO', 
+                                        append_images=ico_images[1:] if len(ico_images) > 1 else []
+                                    )
+                                    logger.success(f"系统 ICO 生成成功: {pcico_path}")
+                            except Exception as ex:
+                                logger.error(f"生成系统 ICO 失败: {ex}")
+                                
                     else:
                         logger.error("ICO 生成失败: 图片转正方形处理出错")
                             
@@ -4905,6 +4940,11 @@ class MainWindow(QWidget):
         self.ico_enabled = QCheckBox("启用 ICO 生成")
         il.addWidget(self.ico_enabled, 0, 0, 1, 6)
         
+        self.ico_system = QCheckBox("系统 ICO (多尺寸容器)")
+        self.ico_system.setToolTip("生成包含多个尺寸的 .ico 文件，让系统自动选择最佳显示效果。")
+        self.ico_system.toggled.connect(self._on_ico_system_toggled)
+        il.addWidget(self.ico_system, 0, 4, 1, 2)
+        
         self.ico_sizes = {}
         # 16x16 ... 480x480
         sizes = [16, 24, 32, 48, 64, 72, 80, 96, 128, 256, 320, 480]
@@ -4935,6 +4975,7 @@ class MainWindow(QWidget):
             self.ico_transparent.setEnabled(checked)
             self.ico_opaque.setEnabled(checked)
             self.ico_png.setEnabled(checked)
+            self.ico_system.setEnabled(checked)
             
         self.ico_enabled.toggled.connect(_toggle_ico)
         # 强制初始化状态
@@ -5496,6 +5537,15 @@ class MainWindow(QWidget):
         self.current_worker.finished.connect(lambda d: self.show_result_dialog(d['folder']))
         self.current_worker.start()
 
+    def _on_ico_system_toggled(self, checked):
+        """系统 ICO 选中时自动勾选推荐尺寸"""
+        if checked:
+            recommended = [16, 24, 32, 48, 256]
+            for s, cb in self.ico_sizes.items():
+                if s in recommended:
+                    cb.setChecked(True)
+                # 不强制取消其他的，用户可能想保留
+
     def single_run(self):
         path = self.single_src_edit.text()
         if not path:
@@ -5518,7 +5568,8 @@ class MainWindow(QWidget):
             "ico_sizes": [s for s, cb in self.ico_sizes.items() if cb.isChecked()],
             "ico_transparent": self.ico_transparent.isChecked(),
             "ico_opaque": self.ico_opaque.isChecked(),
-            "ico_png": self.ico_png.isChecked()
+            "ico_png": self.ico_png.isChecked(),
+            "ico_system": self.ico_system.isChecked(),
         }
         
         logger.info(f"开始处理图片: {path}")
