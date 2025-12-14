@@ -1,4 +1,4 @@
-name: Nuitka Build (v7.2)
+name: Nuitka Build (v9.0 - Generic with Dev-Skip)
 on:
   workflow_dispatch:
     inputs:
@@ -7,7 +7,6 @@ on:
         required: true
         default: 'main.py'
         type: string
-      
       build_mode:
         description: '打包模式'
         required: true
@@ -16,19 +15,16 @@ on:
         options:
           - standalone
           - onefile
-      
       icon_file:
         description: '图标文件名 (留空则不使用图标)'
         required: false
-        default: 'exe.ico'
+        default: 'icon.ico'
         type: string
-      
       requirements_file:
         description: '依赖文件名'
         required: false
         default: 'requirements.txt'
         type: string
-      
       python_version:
         description: 'Python 版本'
         required: true
@@ -38,16 +34,14 @@ on:
           - '3.10'
           - '3.11'
           - '3.12'
-      
       enable_console:
         description: '启用控制台窗口'
         required: true
         default: 'false'
         type: choice
         options:
-          - 'false'
           - 'true'
-      
+          - 'false'
       enable_pyside6:
         description: '启用 PySide6 插件'
         required: true
@@ -56,25 +50,29 @@ on:
         options:
           - 'true'
           - 'false'
-      
+      low_memory:
+        description: '启用 Nuitka 低内存模式（推荐开启，让线程数自动动态调整）'
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
       extra_include_packages:
         description: '额外包含的包 (逗号分隔)'
         required: false
         default: ''
         type: string
-      
       product_name:
         description: '产品名称'
         required: false
         default: 'MyApp'
         type: string
-      
       product_version:
         description: '产品版本'
         required: false
         default: '1.0.0.0'
         type: string
-      
       company_name:
         description: '公司名称'
         required: false
@@ -90,10 +88,18 @@ jobs:
     name: Build on Windows
     runs-on: windows-latest
     timeout-minutes: 180
-
     steps:
       - name: Check-out repository
         uses: actions/checkout@v4
+
+      - name: Show Initial Disk Space
+        shell: pwsh
+        run: |
+          Get-PSDrive C | Select-Object -Property Used, Free | ForEach-Object {
+            $usedGB = [math]::Round($_.Used / 1GB, 2)
+            $freeGB = [math]::Round($_.Free / 1GB, 2)
+            Write-Host "Disk C: Used: $usedGB GB, Free: $freeGB GB"
+          }
 
       - name: Configure Pagefile
         uses: al-cheb/configure-pagefile-action@v1.4
@@ -114,23 +120,20 @@ jobs:
         run: |
           [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           $hasError = $false
-          
           $scriptFile = "${{ inputs.script_name }}"
           if (Test-Path $scriptFile) {
             Write-Host "[OK] Script file: $scriptFile" -ForegroundColor Green
           } else {
             Write-Host "[ERROR] Script file not found: $scriptFile" -ForegroundColor Red
-            Get-ChildItem -Filter "*.py" | ForEach-Object { Write-Host "   Available: $($_.Name)" }
+            Get-ChildItem -Filter "*.py" | ForEach-Object { Write-Host " Available: $($_.Name)" }
             $hasError = $true
           }
-          
           $reqFile = "${{ inputs.requirements_file }}"
           if (Test-Path $reqFile) {
             Write-Host "[OK] Requirements file: $reqFile" -ForegroundColor Green
           } else {
             Write-Host "[WARN] Requirements file not found: $reqFile" -ForegroundColor Yellow
           }
-          
           $iconFile = "${{ inputs.icon_file }}"
           $iconExists = "false"
           if ($iconFile -and $iconFile -ne "" -and (Test-Path $iconFile)) {
@@ -140,7 +143,6 @@ jobs:
             Write-Host "[WARN] Icon file not found: $iconFile" -ForegroundColor Yellow
           }
           echo "icon_exists=$iconExists" >> $env:GITHUB_OUTPUT
-          
           if ($hasError) { exit 1 }
 
       - name: Install Dependencies
@@ -149,37 +151,13 @@ jobs:
           [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           python -m pip install --upgrade pip
           python -m pip install nuitka zstandard ordered-set
-          
           $reqFile = "${{ inputs.requirements_file }}"
           if (Test-Path $reqFile) {
             Write-Host ">>> Installing dependencies from $reqFile" -ForegroundColor Yellow
             python -m pip install -r $reqFile
           }
-          
           Write-Host "Dependencies installed successfully" -ForegroundColor Green
           python -m pip list
-
-      - name: Verify Modules
-        shell: pwsh
-        run: |
-          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-          $env:PYTHONIOENCODING = "utf-8"
-          
-          Write-Host ">>> Verifying installed modules" -ForegroundColor Yellow
-          
-          $modules = @("rembg", "onnxruntime", "PySide6", "cv2")
-          foreach ($mod in $modules) {
-            try {
-              $result = python -c "import $mod; print($mod.__file__)" 2>&1
-              if ($LASTEXITCODE -eq 0) {
-                Write-Host "[OK] $mod installed: $result" -ForegroundColor Green
-              } else {
-                Write-Host "[WARN] $mod not available" -ForegroundColor Yellow
-              }
-            } catch {
-              Write-Host "[WARN] $mod not available" -ForegroundColor Yellow
-            }
-          }
 
       - name: Generate Nuitka Parameters
         id: nuitka_params
@@ -188,32 +166,39 @@ jobs:
           [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           $reqFile = "${{ inputs.requirements_file }}"
           $packages = @()
-          $packageData = @()
-          
-          # 跳过的包列表
+          # 不应被打包的开发/构建工具的综合列表
           $skipPackages = @(
             "pyside6_addons", "pyside6_essentials",
-            "pyside6-addons", "pyside6-essentials"
+            "pyside6-addons", "pyside6-essentials",
+            # 构建/打包工具
+            "pip", "setuptools", "wheel", "pkg-resources",
+            "nuitka", "zstandard", "ordered-set",
+            "pyinstaller", "pyinstaller-hooks-contrib",
+            "cx-freeze", "py2exe", "py2app",
+            "twine", "build", "hatch", "flit",
+            # 测试工具
+            "pytest", "pytest-cov", "pytest-runner",
+            "coverage", "nose", "mock", "tox",
+            # 代码检查与格式化工具
+            "black", "flake8", "pylint", "mypy", "isort",
+            # 文档工具
+            "sphinx"
           )
-          
           if (Test-Path $reqFile) {
             $content = Get-Content $reqFile -Encoding UTF8
             foreach ($line in $content) {
               $line = $line.Trim()
               if ([string]::IsNullOrEmpty($line) -or $line.StartsWith("#")) { continue }
-              
-              $pkgName = $line -replace '[<>=!].*$', '' -replace '\[.*\]', ''
+              $pkgName = $line -replace '[<>=!].*$', '' -replace '\\\[.*\\\]', ''
               $pkgName = $pkgName.Trim().ToLower()
-              
-              if ($pkgName -in $skipPackages) { continue }
-              
-              # 修复：正确的包名到导入名映射
+              if ($pkgName -in $skipPackages) {
+                Write-Host "[INFO] Skipping development/build tool: $pkgName" -ForegroundColor Yellow
+                continue
+              }
               $importName = switch ($pkgName) {
                 "pillow" { "PIL" }
                 "opencv-python" { "cv2" }
                 "opencv-python-headless" { "cv2" }
-                "opencv_python" { "cv2" }
-                "opencv_python_headless" { "cv2" }
                 "scikit-image" { "skimage" }
                 "scikit-learn" { "sklearn" }
                 "pyside6" { "PySide6" }
@@ -221,79 +206,54 @@ jobs:
                 "pyqt6" { "PyQt6" }
                 "beautifulsoup4" { "bs4" }
                 "python-dateutil" { "dateutil" }
+                "pyyaml" { "yaml" }
                 default { $pkgName -replace '-', '_' }
               }
-              
-              if ($importName) {
-                if ($importName -notin $packages) {
-                  $packages += $importName
-                }
-                if ($importName -in @("rembg", "onnxruntime", "pooch", "PySide6", "cv2")) {
-                  if ($importName -notin $packageData) {
-                    $packageData += $importName
-                  }
-                }
+              if ($importName -and $importName -notin $packages) {
+                $packages += $importName
               }
             }
           }
-          
           $extraPkgs = "${{ inputs.extra_include_packages }}"
           if ($extraPkgs) {
             $extraPkgs.Split(',') | ForEach-Object {
               $pkg = $_.Trim()
               if ($pkg -and $pkg -notin $packages) {
                 $packages += $pkg
-                if ($pkg -notin $packageData) {
-                  $packageData += $pkg
-                }
               }
             }
           }
-          
           $packagesStr = $packages -join "`n"
-          $packageDataStr = $packageData -join "`n"
-          
-          Write-Host "Include packages:" -ForegroundColor Cyan
+          Write-Host "--- Nuitka Include Packages ---" -ForegroundColor Cyan
           Write-Host $packagesStr
-          Write-Host "Include package data:" -ForegroundColor Cyan
-          Write-Host $packageDataStr
-          
+          Write-Host "-------------------------------" -ForegroundColor Cyan
           echo "INCLUDE_PACKAGES<<EOF" >> $env:GITHUB_ENV
           echo $packagesStr >> $env:GITHUB_ENV
           echo "EOF" >> $env:GITHUB_ENV
-          
-          echo "INCLUDE_PACKAGE_DATA<<EOF" >> $env:GITHUB_ENV
-          echo $packageDataStr >> $env:GITHUB_ENV
-          echo "EOF" >> $env:GITHUB_ENV
-      - name: Prepare Assets
-        shell: pwsh
-        run: |
-          if (-not (Test-Path "assets")) {
-            New-Item -ItemType Directory -Path "assets" -Force | Out-Null
-          }
-          $iconFile = "${{ inputs.icon_file }}"
-          if ($iconFile -and (Test-Path $iconFile)) {
-            Copy-Item $iconFile -Destination "assets/" -Force
-            Write-Host "Icon copied to assets/" -ForegroundColor Green
-          }
 
       - name: Set Nuitka Cache Dir
         shell: pwsh
         run: |
-          $cacheDir = "C:\nuitka_cache"
+          $cacheDir = "C:\\nuitka_cache"
           New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
           echo "NUITKA_CACHE_DIR=$cacheDir" >> $env:GITHUB_ENV
           Write-Host "Nuitka cache directory set to: $cacheDir" -ForegroundColor Green
 
-      - name: Build with Nuitka (with icon)
-        if: steps.validate.outputs.icon_exists == 'true'
+      - name: Build with Nuitka
         uses: Nuitka/Nuitka-Action@main
         with:
           nuitka-version: main
           script-name: ${{ inputs.script_name }}
           mode: ${{ inputs.build_mode }}
+          low-memory: ${{ inputs.low_memory }}  # 强烈建议开启，让线程数自动动态调整
+          
+          # 固定优化：禁用 LTO + 关闭进度条（不指定 jobs，让 low-memory 动态控制线程）
+          extra-options: >-
+            --lto=no
+            --no-progressbar
+          
           include-package: ${{ env.INCLUDE_PACKAGES }}
-          include-package-data: ${{ env.INCLUDE_PACKAGE_DATA }}
+          
           nofollow-import-to: |
             pytest
             setuptools
@@ -301,15 +261,18 @@ jobs:
             unittest
             test
             tests
+          noinclude-pytest-mode: nofollow
+          noinclude-setuptools-mode: nofollow
+          noinclude-unittest-mode: nofollow
+          
           enable-plugins: ${{ inputs.enable_pyside6 == 'true' && 'pyside6' || '' }}
           include-qt-plugins: |
             sensible
             qml
-          noinclude-pytest-mode: nofollow
-          noinclude-setuptools-mode: nofollow
-          noinclude-unittest-mode: nofollow
-          windows-icon-from-ico: ${{ inputs.icon_file }}
+           
+          windows-icon-from-ico: ${{ steps.validate.outputs.icon_exists == 'true' && inputs.icon_file || '' }}
           windows-console-mode: ${{ inputs.enable_console == 'true' && 'force' || 'disable' }}
+          
           output-dir: build
           assume-yes-for-downloads: true
           company-name: ${{ inputs.company_name }}
@@ -318,85 +281,48 @@ jobs:
           product-version: ${{ inputs.product_version }}
           file-description: ${{ inputs.product_name }}
 
-      - name: Build with Nuitka (without icon)
-        if: steps.validate.outputs.icon_exists != 'true'
-        uses: Nuitka/Nuitka-Action@main
-        with:
-          nuitka-version: main
-          script-name: ${{ inputs.script_name }}
-          mode: ${{ inputs.build_mode }}
-          include-package: ${{ env.INCLUDE_PACKAGES }}
-          include-package-data: ${{ env.INCLUDE_PACKAGE_DATA }}
-          nofollow-import-to: |
-            pytest
-            setuptools
-            distutils
-            unittest
-            test
-            tests
-          enable-plugins: ${{ inputs.enable_pyside6 == 'true' && 'pyside6' || '' }}
-          include-qt-plugins: |
-            sensible
-            qml
-          noinclude-pytest-mode: nofollow
-          noinclude-setuptools-mode: nofollow
-          noinclude-unittest-mode: nofollow
-          windows-console-mode: ${{ inputs.enable_console == 'true' && 'force' || 'disable' }}
-          output-dir: build
-          assume-yes-for-downloads: true
-          company-name: ${{ inputs.company_name }}
-          product-name: ${{ inputs.product_name }}
-          file-version: ${{ inputs.product_version }}
-          product-version: ${{ inputs.product_version }}
-          file-description: ${{ inputs.product_name }}
+      - name: Show Build Disk Usage
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "--- Build Directory Size ---"
+          if (Test-Path "build") {
+            $buildSize = (Get-ChildItem -Path "build" -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB
+            Write-Host ("Build directory size: {0:N2} MB" -f $buildSize) -ForegroundColor Yellow
+          }
+          Write-Host "--------------------------"
+          Get-PSDrive C | Select-Object -Property Used, Free | ForEach-Object {
+            $usedGB = [math]::Round($_.Used / 1GB, 2)
+            $freeGB = [math]::Round($_.Free / 1GB, 2)
+            Write-Host "Disk C: Used: $usedGB GB, Free: $freeGB GB"
+          }
 
       - name: Verify Build Output
         shell: pwsh
         run: |
           [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           Write-Host "========================================" -ForegroundColor Cyan
-          Write-Host "         Verifying Build Output" -ForegroundColor Cyan
+          Write-Host " Verifying Build Output" -ForegroundColor Cyan
           Write-Host "========================================" -ForegroundColor Cyan
-          
           if (Test-Path "build") {
             Write-Host "Build directory contents:" -ForegroundColor Yellow
             Get-ChildItem -Path "build" -Recurse -Depth 2 | ForEach-Object {
               Write-Host $_.FullName
             }
-            
-            $distDirs = Get-ChildItem -Path "build" -Filter "*.dist" -Directory
-            foreach ($dist in $distDirs) {
-              Write-Host ""
-              Write-Host "Checking $($dist.Name):" -ForegroundColor Cyan
-              
-              $checkPaths = @{
-                "rembg" = "rembg"
-                "onnxruntime" = "onnxruntime"
-                "PySide6" = "PySide6"
-                "cv2" = "cv2"
-              }
-              
-              foreach ($item in $checkPaths.GetEnumerator()) {
-                $checkPath = Join-Path $dist.FullName $item.Value
-                if (Test-Path $checkPath) {
-                  Write-Host "[OK] $($item.Key) packaged" -ForegroundColor Green
-                } else {
-                  Write-Host "[INFO] $($item.Key) not found (may be embedded)" -ForegroundColor Yellow
-                }
-              }
-            }
-            
             $exeFiles = Get-ChildItem -Path "build" -Filter "*.exe" -Recurse
             if ($exeFiles) {
               Write-Host ""
               Write-Host "Executable files found:" -ForegroundColor Green
               $exeFiles | ForEach-Object {
                 $size = [math]::Round($_.Length / 1MB, 2)
-                Write-Host "  $($_.Name) - $size MB" -ForegroundColor Cyan
+                Write-Host " $($_.Name) - $size MB" -ForegroundColor Cyan
               }
+            } else {
+              Write-Host "[ERROR] No executable file found in the build directory!" -ForegroundColor Red
+              exit 1
             }
           } else {
-            Write-Host "[ERROR] Build directory not found" -ForegroundColor Red
+            Write-Host "[ERROR] Build directory not found!" -ForegroundColor Red
             exit 1
           }
 
@@ -406,8 +332,8 @@ jobs:
         with:
           name: ${{ inputs.product_name }}-${{ inputs.product_version }}-standalone
           path: build/*.dist/
-          include-hidden-files: true
-          retention-days: 30
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Upload Artifact (onefile)
         if: inputs.build_mode == 'onefile'
@@ -415,25 +341,34 @@ jobs:
         with:
           name: ${{ inputs.product_name }}-${{ inputs.product_version }}-onefile
           path: build/*.exe
-          retention-days: 30
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Cleanup to free disk space
         if: always()
         shell: pwsh
         run: |
-          Write-Host ">>> Cleaning up temporary files..." -ForegroundColor Yellow
+          Write-Host ">>> Cleaning up temporary files and build artifacts..." -ForegroundColor Yellow
           Remove-Item -Recurse -Force "$env:LOCALAPPDATA\pip\cache" -ErrorAction SilentlyContinue
           Remove-Item -Recurse -Force "C:\nuitka_cache" -ErrorAction SilentlyContinue
-          Remove-Item -Recurse -Force "$env:TEMP\*" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "build" -ErrorAction SilentlyContinue
           Write-Host "Disk cleanup completed" -ForegroundColor Green
+          
+          Write-Host "--- Final Disk Space ---"
+          Get-PSDrive C | Select-Object -Property Used, Free | ForEach-Object {
+            $usedGB = [math]::Round($_.Used / 1GB, 2)
+            $freeGB = [math]::Round($_.Free / 1GB, 2)
+            Write-Host "Disk C: Used: $usedGB GB, Free: $freeGB GB"
+          }
 
       - name: Build Summary
+        if: success()
         shell: pwsh
         run: |
           [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           Write-Host ""
           Write-Host "========================================" -ForegroundColor Green
-          Write-Host "           Build Complete!" -ForegroundColor Green
+          Write-Host " Build Complete!" -ForegroundColor Green
           Write-Host "========================================" -ForegroundColor Green
           Write-Host ""
           Write-Host "Product: ${{ inputs.product_name }}" -ForegroundColor Cyan
@@ -441,4 +376,4 @@ jobs:
           Write-Host "Mode: ${{ inputs.build_mode }}" -ForegroundColor Cyan
           Write-Host "Python: ${{ inputs.python_version }}" -ForegroundColor Cyan
           Write-Host ""
-          Write-Host "Download artifact from Actions page" -ForegroundColor Yellow
+          Write-Host "Download artifact from the 'Summary' page of this workflow run." -ForegroundColor Yellow
