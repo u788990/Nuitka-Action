@@ -1,4 +1,4 @@
-name: Ultimate Smart Nuitka Build (Fixed Parameters)
+name: Ultimate Smart Nuitka Build (No-Conflict Version)
 
 on:
   workflow_dispatch:
@@ -8,15 +8,15 @@ on:
         required: true
         default: 'biekuai.py'
       icon_file:
-        description: '图标文件'
+        description: '图标文件 (留空则自动检测)'
         required: false
         default: 'exe.ico'
       output_name:
-        description: '程序名称'
+        description: '生成的程序名称 (留空则使用入口文件名)'
         required: false
         default: ''
       build_mode:
-        description: '模式'
+        description: '打包模式'
         required: true
         default: 'onefile'
         type: choice
@@ -47,50 +47,75 @@ jobs:
           Remove-Item -Recurse -Force "$env:AGENT_TOOLSDIRECTORY\CodeQL" -ErrorAction SilentlyContinue
           [System.GC]::Collect()
 
-      - name: Smart Analysis
+      - name: Smart Analysis and Dependency Merge
         id: detect
         shell: pwsh
         run: |
+          # 1. 确定入口文件
           $entry = "${{ github.event.inputs.entry_point }}"
           if (!(Test-Path $entry)) { $entry = Get-ChildItem -Filter "*.py" | Select-Object -First 1 -ExpandProperty Name }
           
+          # 2. 读取 requirements.txt 内容（如果存在），用于去重
+          $req_file = "requirements.txt"
+          $req_content = ""
+          if (Test-Path $req_file) { $req_content = Get-Content $req_file | Out-String }
+
+          # 3. 智能扫描代码中的 import
           $code = Get-Content $entry -Raw
           $imports = [regex]::Matches($code, '(?m)^(?:from|import)\s+([\w\d]+)') | ForEach-Object { $_.Groups[1].Value.ToLower() }
           
-          # 映射表
+          # 映射表: 模块名 -> Pip包名
           $pkg_map = @{ "cv2"="opencv-python"; "pil"="Pillow"; "numpy"="numpy"; "pyside6"="PySide6"; "rembg"="rembg"; "onnxruntime"="onnxruntime"; "psutil"="psutil"; "imageio"="imageio"; "tkinterdnd2"="tkinterdnd2" }
           
-          $install_list = @("zstandard", "ordered-set")
+          # 初始安装列表 (Nuitka 核心依赖)
+          $auto_pkgs = @()
+          if ($req_content -notmatch "zstandard") { $auto_pkgs += "zstandard" }
+          if ($req_content -notmatch "ordered-set") { $auto_pkgs += "ordered-set" }
+
           $auto_plugins = @()
-          $include_pkg_data = "" # 专门给 tkinterdnd2 用
+          $include_pkg_data = ""
 
           foreach ($mod in $imports) {
-            if ($pkg_map.ContainsKey($mod)) { $install_list += $pkg_map[$mod] }
+            # 如果映射表存在该模块，且 requirements.txt 里没写这个包，才加入自动安装列表
+            if ($pkg_map.ContainsKey($mod)) {
+                $p = $pkg_map[$mod]
+                if ($req_content -notmatch $p) { $auto_pkgs += $p }
+            }
             if ($mod -eq "pyside6") { $auto_plugins += "pyside6" }
             if ($mod -eq "tkinter") { $auto_plugins += "tk-inter" }
-            # 特殊处理：记录需要包含数据的包名
             if ($mod -eq "tkinterdnd2") { $include_pkg_data = "tkinterdnd2" }
           }
 
-          # 图标与名称逻辑 (保留)
+          # 4. 图标检测逻辑
           $icon = "${{ github.event.inputs.icon_file }}"
-          if ($icon -eq "" -or !(Test-Path $icon)) { $foundIcon = Get-ChildItem -Filter "*.ico" | Select-Object -First 1; $icon = if ($foundIcon) { $foundIcon.Name } else { "" } }
+          if ($icon -eq "" -or !(Test-Path $icon)) { 
+            $foundIcon = Get-ChildItem -Filter "*.ico" | Select-Object -First 1
+            $icon = if ($foundIcon) { $foundIcon.Name } else { "" } 
+          }
+          
+          # 5. 名称确定
           $name = "${{ github.event.inputs.output_name }}"
           if ($name -eq "") { $name = [System.IO.Path]::GetFileNameWithoutExtension($entry) }
 
-          # 导出
+          # 6. 导出变量
+          $pkgs_str = ($auto_pkgs | Select-Object -Unique) -join " "
           echo "entry=$entry" >> $env:GITHUB_OUTPUT
           echo "name=$name" >> $env:GITHUB_OUTPUT
           echo "icon=$icon" >> $env:GITHUB_OUTPUT
-          echo "pkgs=$(($install_list | Select-Object -Unique) -join ' ')" >> $env:GITHUB_OUTPUT
+          echo "pkgs=$pkgs_str" >> $env:GITHUB_OUTPUT
           echo "plugins=$(($auto_plugins | Select-Object -Unique) -join ',')" >> $env:GITHUB_OUTPUT
           echo "pkg_data=$include_pkg_data" >> $env:GITHUB_OUTPUT
+          echo "has_req=$((Test-Path $req_file).ToString().ToLower())" >> $env:GITHUB_OUTPUT
 
-      - name: Install Dependencies
+      - name: Unified Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install ${{ steps.detect.outputs.pkgs }}
-          if (Test-Path "requirements.txt") { pip install -r requirements.txt }
+          # 将自动检测到的包和 requirements.txt 合并在同一个命令中安装，让 pip 自动处理冲突
+          $cmd = "pip install ${{ steps.detect.outputs.pkgs }}"
+          if ("${{ steps.detect.outputs.has_req }}" -eq "true") {
+            $cmd += " -r requirements.txt"
+          }
+          Invoke-Expression $cmd
 
       - name: Build with Nuitka
         uses: Nuitka/Nuitka-Action@main
@@ -101,21 +126,17 @@ jobs:
           output-dir: build
           mode: ${{ github.event.inputs.build_mode }}
           
-          # 核心修正：使用插件支持的正确输入项
           enable-plugins: ${{ steps.detect.outputs.plugins }}
-          
-          # 专门处理 tkinterdnd2 的数据包含
           include-package-data: ${{ steps.detect.outputs.pkg_data }}
           
-          # 专门处理 FFmpeg 文件夹包含 (如果文件夹存在)
+          # 自动包含目录逻辑（小白友好）
           include-data-dir: ${{ hashFiles('fongzhuang/*') != '' && 'fongzhuang=fongzhuang' || '' }}
           
-          # 权限修复：关闭盾牌，恢复拖拽
+          # 核心：关闭盾牌图标，恢复拖拽功能
           windows-uac-admin: false
           disable-console: true
           windows-icon-from-ico: ${{ steps.detect.outputs.icon }}
           
-          # 性能优化
           assume-yes-for-downloads: true
           onefile-tempdir-spec: "{CACHE_DIR}/${{ steps.detect.outputs.name }}/v1"
 
