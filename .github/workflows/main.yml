@@ -1,4 +1,4 @@
-name: Ultimate Nuitka Build (Requirements-First)
+name: Ultimate Nuitka Build (Auto-Fix Dependencies)
 
 on:
   workflow_dispatch:
@@ -38,7 +38,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          cache: 'pip'
+          # 注意：去掉 cache: pip，防止旧版本的残留包干扰环境
 
       - name: Free Disk Space (Deep Cleanup)
         shell: pwsh
@@ -51,31 +51,39 @@ jobs:
           Remove-Item -Path "C:\Users\runneradmin\AppData\Local\Temp\*" -Recurse -Force
           [System.GC]::Collect()
 
-      - name: Install Dependencies
+      - name: Auto-Fix requirements.txt & Install
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
           if (Test-Path "requirements.txt") {
-            Write-Host ">>> Installing from requirements.txt..."
-            pip install -r requirements.txt
+            Write-Host ">>> Requirements.txt found. Cleaning conflict packages..."
+            # 核心修复逻辑：
+            # 自动删除 requirements.txt 中可能导致冲突的 zstandard 和 ordered-set 行
+            # 让 pip 自动选择最适合 Nuitka 的版本，彻底解决 ResolutionImpossible 报错
+            $content = Get-Content "requirements.txt" | Where-Object { $_ -notmatch "zstandard" -and $_ -notmatch "ordered-set" }
+            $content | Set-Content "requirements_fixed.txt"
+            
+            Write-Host ">>> Installing cleaned dependencies..."
+            pip install -r requirements_fixed.txt --upgrade
+            # 补装 Nuitka 必需的加速库（不设版本号，自动匹配最新）
+            pip install zstandard ordered-set
           } else {
             Write-Host ">>> No requirements.txt found. Installing default packages..."
-            pip install zstandard ordered-set opencv-python Pillow numpy tkinterdnd2 PySide6
+            pip install zstandard ordered-set opencv-python==4.8.0.76 Pillow==10.2.0 numpy==1.26.4 tkinterdnd2==0.3.0
           }
 
       - name: Auto-Detect Nuitka Settings
         id: detect
         shell: pwsh
         run: |
-          # 1. 确定入口文件
+          # 1. 入口文件检测
           $entry = "${{ github.event.inputs.entry_point }}"
           if (!(Test-Path $entry)) { $entry = Get-ChildItem -Filter "*.py" | Select-Object -First 1 -ExpandProperty Name }
 
-          # 2. 仅分析 Nuitka 插件需求 (不干扰 pip)
+          # 2. 分析插件需求
           $code = Get-Content $entry -Raw
           $plugins = @()
           $pkg_data = ""
-          
           if ($code -match "PySide6") { $plugins += "pyside6" }
           if ($code -match "tkinter") { $plugins += "tk-inter" }
           if ($code -match "tkinterdnd2") { $pkg_data = "tkinterdnd2" }
@@ -87,7 +95,7 @@ jobs:
             $icon = if ($foundIcon) { $foundIcon.Name } else { "" } 
           }
 
-          # 4. 程序名称
+          # 4. 程序名称确定
           $name = "${{ github.event.inputs.output_name }}"
           if ($name -eq "") { $name = [System.IO.Path]::GetFileNameWithoutExtension($entry) }
 
@@ -106,14 +114,14 @@ jobs:
           output-dir: build
           mode: ${{ github.event.inputs.build_mode }}
           
-          # 插件与数据包含 (基于代码检测)
+          # 插件与数据包含 (基于代码自动分析)
           enable-plugins: ${{ steps.detect.outputs.plugins }}
           include-package-data: ${{ steps.detect.outputs.pkg_data }}
           
           # 自动包含 FFmpeg 文件夹逻辑
           include-data-dir: ${{ hashFiles('fongzhuang/*') != '' && 'fongzhuang=fongzhuang' || '' }}
           
-          # 拖拽修复：禁用管理员权限，隐藏控制台
+          # 核心：关闭盾牌图标，恢复拖拽功能
           windows-uac-admin: false
           disable-console: true
           windows-icon-from-ico: ${{ steps.detect.outputs.icon }}
