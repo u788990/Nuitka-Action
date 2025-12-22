@@ -1,36 +1,28 @@
-name: Ultimate Smart Nuitka Build (All-in-One)
+name: Ultimate Smart Nuitka Build (Fixed Parameters)
 
 on:
   workflow_dispatch:
     inputs:
       entry_point:
-        description: '入口 Python 文件 (如: main.py)'
+        description: '入口 Python 文件'
         required: true
         default: 'biekuai.py'
       icon_file:
-        description: '图标文件 (留空则自动检测)'
+        description: '图标文件'
         required: false
         default: 'exe.ico'
       output_name:
-        description: '生成的程序名称 (留空则使用入口文件名)'
+        description: '程序名称'
         required: false
         default: ''
       build_mode:
-        description: '打包模式'
+        description: '模式'
         required: true
         default: 'onefile'
         type: choice
         options:
           - onefile
           - standalone
-      smart_dependency_filter:
-        description: '开启智能依赖洗涤 (只安装代码中import过的库，防止安装 requirements 中的垃圾包)'
-        type: boolean
-        default: true
-      enable_plugins:
-        description: '手动指定额外插件 (逗号分隔，可选)'
-        required: false
-        default: ''
 
 jobs:
   build:
@@ -48,108 +40,59 @@ jobs:
           python-version: '3.10'
           cache: 'pip'
 
-      # 功能保留 1：深度空间清理 (防止 AI 库打包空间不足)
-      - name: Free Disk Space (Deep Cleanup)
+      - name: Free Disk Space
         shell: pwsh
         run: |
-          Write-Host "Starting deep cleanup..."
-          Remove-TypeData * -ErrorAction SilentlyContinue
-          $ErrorActionPreference = 'SilentlyContinue'
-          Remove-Item -Recurse -Force "C:\Microsoft\AndroidSDK"
-          Remove-Item -Recurse -Force "$env:AGENT_TOOLSDIRECTORY\CodeQL"
-          Remove-Item -Recurse -Force "$env:AGENT_TOOLSDIRECTORY\Java_Temurin-Hotspot_jdk"
-          Remove-Item -Recurse -Force "$env:AGENT_TOOLSDIRECTORY\node"
-          Remove-Item -Path "C:\Users\runneradmin\AppData\Local\Temp\*" -Recurse -Force
+          Remove-Item -Recurse -Force "C:\Microsoft\AndroidSDK" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "$env:AGENT_TOOLSDIRECTORY\CodeQL" -ErrorAction SilentlyContinue
           [System.GC]::Collect()
-          Write-Host "Disk cleanup completed."
 
-      # 功能补全 2：全智能代码分析 (核心逻辑)
-      - name: Auto-Detect Files and Smart Analysis
+      - name: Smart Analysis
         id: detect
         shell: pwsh
         run: |
-          # 1. 确定入口文件
           $entry = "${{ github.event.inputs.entry_point }}"
-          if (!(Test-Path $entry)) {
-            $entry = Get-ChildItem -Filter "*.py" | Select-Object -First 1 -ExpandProperty Name
-          }
-
-          # 2. 智能扫描代码中的 import
+          if (!(Test-Path $entry)) { $entry = Get-ChildItem -Filter "*.py" | Select-Object -First 1 -ExpandProperty Name }
+          
           $code = Get-Content $entry -Raw
           $imports = [regex]::Matches($code, '(?m)^(?:from|import)\s+([\w\d]+)') | ForEach-Object { $_.Groups[1].Value.ToLower() }
-          $imports = $imports | Select-Object -Unique
-
-          # 3. 映射表：Module -> Pip Package
+          
+          # 映射表
           $pkg_map = @{ "cv2"="opencv-python"; "pil"="Pillow"; "numpy"="numpy"; "pyside6"="PySide6"; "rembg"="rembg"; "onnxruntime"="onnxruntime"; "psutil"="psutil"; "imageio"="imageio"; "tkinterdnd2"="tkinterdnd2" }
           
-          $install_list = @("zstandard", "ordered-set") # Nuitka 必备加速包
+          $install_list = @("zstandard", "ordered-set")
           $auto_plugins = @()
-          $extra_args = ""
+          $include_pkg_data = "" # 专门给 tkinterdnd2 用
 
           foreach ($mod in $imports) {
             if ($pkg_map.ContainsKey($mod)) { $install_list += $pkg_map[$mod] }
             if ($mod -eq "pyside6") { $auto_plugins += "pyside6" }
             if ($mod -eq "tkinter") { $auto_plugins += "tk-inter" }
-            if ($mod -eq "tkinterdnd2") { 
-               $install_list += "tkinterdnd2"
-               $extra_args += "--include-package-data=tkinterdnd2 " 
-            }
+            # 特殊处理：记录需要包含数据的包名
+            if ($mod -eq "tkinterdnd2") { $include_pkg_data = "tkinterdnd2" }
           }
 
-          # 4. 图标自动检测逻辑 (保留原功能)
+          # 图标与名称逻辑 (保留)
           $icon = "${{ github.event.inputs.icon_file }}"
-          if ($icon -eq "" -or !(Test-Path $icon)) {
-            if (Test-Path "exe.ico") { $icon = "exe.ico" }
-            else { 
-              $foundIcon = Get-ChildItem -Filter "*.ico" | Select-Object -First 1 -ExpandProperty Name
-              $icon = if ($foundIcon) { $foundIcon } else { "" }
-            }
-          }
-
-          # 5. 程序名称 (保留原功能)
+          if ($icon -eq "" -or !(Test-Path $icon)) { $foundIcon = Get-ChildItem -Filter "*.ico" | Select-Object -First 1; $icon = if ($foundIcon) { $foundIcon.Name } else { "" } }
           $name = "${{ github.event.inputs.output_name }}"
           if ($name -eq "") { $name = [System.IO.Path]::GetFileNameWithoutExtension($entry) }
 
-          # 6. 处理插件字符串连接
-          $manual_plugins = "${{ github.event.inputs.enable_plugins }}"
-          if ($manual_plugins) { $auto_plugins += $manual_plugins.Split(",") }
-          $final_plugins = ($auto_plugins | Select-Object -Unique) -join ","
-
-          # 7. 导出所有参数
+          # 导出
           echo "entry=$entry" >> $env:GITHUB_OUTPUT
-          echo "icon=$icon" >> $env:GITHUB_OUTPUT
           echo "name=$name" >> $env:GITHUB_OUTPUT
+          echo "icon=$icon" >> $env:GITHUB_OUTPUT
           echo "pkgs=$(($install_list | Select-Object -Unique) -join ' ')" >> $env:GITHUB_OUTPUT
-          echo "plugins=$final_plugins" >> $env:GITHUB_OUTPUT
-          echo "extra_args=$extra_args" >> $env:GITHUB_OUTPUT
+          echo "plugins=$(($auto_plugins | Select-Object -Unique) -join ',')" >> $env:GITHUB_OUTPUT
+          echo "pkg_data=$include_pkg_data" >> $env:GITHUB_OUTPUT
 
-      # 功能补全 3：带“洗涤”功能的依赖安装
       - name: Install Dependencies
-        shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          $needed_pkgs = "${{ steps.detect.outputs.pkgs }}"
-          $filter_active = "${{ github.event.inputs.smart_dependency_filter }}"
+          pip install ${{ steps.detect.outputs.pkgs }}
+          if (Test-Path "requirements.txt") { pip install -r requirements.txt }
 
-          if ($filter_active -eq "true") {
-             Write-Host ">>> Smart Filter Active: Installing only analyzed packages..."
-             pip install $needed_pkgs.Split(" ")
-          } else {
-             Write-Host ">>> Normal Mode: Installing everything..."
-             if (Test-Path "requirements.txt") { pip install -r requirements.txt }
-             pip install $needed_pkgs.Split(" ")
-          }
-
-      # 功能保留 4：Nuitka 缓存
-      - name: Nuitka Cache
-        uses: actions/cache@v4
-        with:
-          path: ~\AppData\Local\Nuitka\Nuitka\Cache
-          key: ${{ runner.os }}-nuitka-${{ hashFiles('**/*.py') }}
-          restore-keys: ${{ runner.os }}-nuitka-
-
-      # 功能融合 5：构建核心 (解决了拖拽失效 + 库丢失问题)
-      - name: Build Executable with Nuitka
+      - name: Build with Nuitka
         uses: Nuitka/Nuitka-Action@main
         with:
           nuitka-version: main
@@ -157,37 +100,27 @@ jobs:
           output-file: ${{ steps.detect.outputs.name }}
           output-dir: build
           mode: ${{ github.event.inputs.build_mode }}
-          jobs: ${{ env.NUMBER_OF_PROCESSORS }}
           
-          # GUI 设置
+          # 核心修正：使用插件支持的正确输入项
+          enable-plugins: ${{ steps.detect.outputs.plugins }}
+          
+          # 专门处理 tkinterdnd2 的数据包含
+          include-package-data: ${{ steps.detect.outputs.pkg_data }}
+          
+          # 专门处理 FFmpeg 文件夹包含 (如果文件夹存在)
+          include-data-dir: ${{ hashFiles('fongzhuang/*') != '' && 'fongzhuang=fongzhuang' || '' }}
+          
+          # 权限修复：关闭盾牌，恢复拖拽
+          windows-uac-admin: false
           disable-console: true
           windows-icon-from-ico: ${{ steps.detect.outputs.icon }}
-          # 核心修复：关闭管理员权限，恢复文件拖拽功能
-          windows-uac-admin: false
           
-          # 智能参数注入
-          enable-plugins: ${{ steps.detect.outputs.plugins }}
-          extra-args: ${{ steps.detect.outputs.extra_args }}
-          
-          # 通用优化
-          include-package: rembg,onnxruntime
+          # 性能优化
           assume-yes-for-downloads: true
           onefile-tempdir-spec: "{CACHE_DIR}/${{ steps.detect.outputs.name }}/v1"
-          disable-cache: false
-
-      # 功能保留 6：编译后清理
-      - name: Post-Build Cleanup
-        shell: pwsh
-        run: |
-          $buildFolder = "build/${{ steps.detect.outputs.name }}.build"
-          if (Test-Path $buildFolder) { Remove-Item -Recurse -Force $buildFolder }
-          pip cache purge
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.detect.outputs.name }}-Binary
-          path: |
-            build/*.exe
-            build/*.dist
-          retention-days: 7
+          path: build/*.exe
