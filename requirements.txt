@@ -4,3 +4,14 @@ ordered-set==4.1.0
 
 zstandard==0.20.0
     # via -r requirements.in
+# 核心图像处理 (针对 Python 3.10 优化的稳定版本)
+opencv-python==4.8.0.76
+numpy==1.26.4
+Pillow==10.2.0
+
+# 拖拽功能核心库
+tkinterdnd2==0.3.0
+
+# Nuitka 打包压缩与兼容性优化
+zstandard==0.22.0
+ordered-set==4.1.0
